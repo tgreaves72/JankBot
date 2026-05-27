@@ -1,0 +1,23 @@
+{
+  "name": "jankbot",
+  "version": "1.0.0",
+  "description": "A local MTG deck-building chat app powered by Scryfall and Ollama.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "magic",
+    "mtg",
+    "scryfall",
+    "ollama",
+    "deckbuilder"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}

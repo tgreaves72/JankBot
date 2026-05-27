@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>JankBot</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="rail" aria-label="Saved builds">
+        <div class="brand">
+          <div class="brand-mark">J</div>
+          <div>
+            <h1>JankBot</h1>
+            <p>Scryfall deck intelligence</p>
+          </div>
+        </div>
+
+        <button class="sync-button" id="syncButton" type="button">
+          <span class="icon">R</span>
+          <span>Refresh Scryfall</span>
+        </button>
+        <button class="model-button" id="pullModelButton" type="button">
+          <span class="icon">M</span>
+          <span>Pull Ollama Model</span>
+        </button>
+
+        <section>
+          <h2>Builds</h2>
+          <div class="history" id="history"></div>
+        </section>
+
+        <section class="status-card">
+          <h2>Status</h2>
+          <dl>
+            <div>
+              <dt>Cards</dt>
+              <dd id="cardCount">...</dd>
+            </div>
+            <div>
+              <dt>Updated</dt>
+              <dd id="updatedAt">...</dd>
+            </div>
+            <div>
+              <dt>Model</dt>
+              <dd id="modelName">...</dd>
+            </div>
+            <div>
+              <dt>Ollama</dt>
+              <dd id="ollamaStatus">...</dd>
+            </div>
+          </dl>
+        </section>
+      </aside>
+
+      <section class="chat-panel" aria-label="Chat">
+        <div class="chat-top">
+          <div>
+            <p class="eyebrow">Budget-first synergy engine</p>
+            <h2>Ask for a card or a complete deck</h2>
+          </div>
+          <div class="selectors">
+            <label>
+              <span>Format</span>
+              <select id="format">
+                <option value="commander">Commander</option>
+                <option value="modern">Modern</option>
+                <option value="standard">Standard</option>
+                <option value="pioneer">Pioneer</option>
+                <option value="pauper">Pauper</option>
+              </select>
+            </label>
+            <label>
+              <span>Budget cap</span>
+              <input id="maxPrice" type="number" min="0.25" max="50" step="0.25" value="2">
+            </label>
+          </div>
+        </div>
+
+        <div class="messages" id="messages">
+          <article class="message assistant">
+            <div class="avatar">JB</div>
+            <div class="bubble">
+              <p>Give me a deck based around Teysa Karlov.</p>
+              <p>Give me a card that works well with Yarok, the Desecrated.</p>
+            </div>
+          </article>
+        </div>
+
+        <form class="composer" id="chatForm">
+          <div class="autocomplete-wrap">
+            <input id="messageInput" autocomplete="off" placeholder="Give me a deck based around Niv-Mizzet, Parun." aria-label="Chat message">
+            <div class="suggestions" id="suggestions"></div>
+          </div>
+          <button type="submit" aria-label="Send">
+            <span>Send</span>
+            <span class="icon">&gt;</span>
+          </button>
+        </form>
+      </section>
+
+      <aside class="inspector" aria-label="Deck inspector">
+        <div class="hero-card" id="heroCard">
+          <div class="card-art-placeholder"></div>
+          <div>
+            <p class="eyebrow">Anchor</p>
+            <h2>No card selected</h2>
+            <p>Ask JankBot for a recommendation and the card analysis will appear here.</p>
+          </div>
+        </div>
+
+        <section class="metrics">
+          <div>
+            <span id="totalPrice">$0</span>
+            <p>Total estimate</p>
+          </div>
+          <div>
+            <span id="selectedPrice">$0</span>
+            <p>Selected cost</p>
+          </div>
+          <div>
+            <span id="deckSize">0</span>
+            <p>Cards</p>
+          </div>
+          <div>
+            <span id="validity">...</span>
+            <p>Validation</p>
+          </div>
+        </section>
+
+        <section class="chart-section">
+          <div class="section-title">
+            <h2>Mana Curve</h2>
+            <div class="toolbar-actions">
+              <button id="editDeckButton" type="button" disabled>Edit</button>
+              <button id="exportButton" type="button" disabled>Export</button>
+            </div>
+          </div>
+          <div class="curve" id="curve"></div>
+        </section>
+
+        <section class="deck-section">
+          <h2>Decklist</h2>
+          <div class="decklist" id="decklist"></div>
+        </section>
+      </aside>
+    </main>
+
+    <dialog class="editor-dialog" id="deckEditor">
+      <form method="dialog" class="editor-shell">
+        <header class="editor-header">
+          <div>
+            <p class="eyebrow">Validated deck editor</p>
+            <h2 id="editorTitle">Edit deck</h2>
+          </div>
+          <button class="icon-button" id="closeEditorButton" type="button" aria-label="Close editor">X</button>
+        </header>
+
+        <section class="editor-summary">
+          <div>
+            <span id="editorCount">0</span>
+            <p>Cards</p>
+          </div>
+          <div>
+            <span id="editorPrice">$0</span>
+            <p>Total</p>
+          </div>
+          <div>
+            <span id="editorStatus">Unchecked</span>
+            <p>Validation</p>
+          </div>
+        </section>
+
+        <div class="editor-add">
+          <label>
+            <span>Add card</span>
+            <input id="editorAddInput" autocomplete="off" placeholder="Search Scryfall card name">
+          </label>
+          <button id="editorAddButton" type="button">Add</button>
+          <div class="editor-suggestions" id="editorSuggestions"></div>
+        </div>
+
+        <div class="editor-body">
+          <div class="editor-list" id="editorList"></div>
+          <aside class="editor-validation" id="editorValidation">
+            <h3>Validation</h3>
+            <p>Make an edit to check format legality.</p>
+          </aside>
+        </div>
+
+        <footer class="editor-footer">
+          <button id="validateEditorButton" type="button">Validate</button>
+          <button id="saveEditorButton" type="button" disabled>Save edits</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
