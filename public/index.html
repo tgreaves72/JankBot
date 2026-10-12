@@ -3,36 +3,36 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Build budget Commander decks and discover Magic: The Gathering card synergies with JankBot.">
     <title>JankBot</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=workshop-7">
   </head>
   <body>
+    <header class="masthead">
+      <img class="masthead-art" src="/art-command-tower.jpg" alt="Command Tower artwork by Josu Solano" width="626" height="457">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"><span class="icon icon-layers"></span></span><div><h1>JankBot</h1><p>Magic: The Gathering deck workshop</p></div></div>
+      <div class="masthead-controls"><span class="edition-label">THE COMMAND ZONE</span><button id="demoSignOut" class="icon-button sign-out-button" type="button" aria-label="Sign out" title="Sign out of JankBot" hidden><span class="icon icon-log-out" aria-hidden="true"></span><span>Sign out</span></button></div>
+    </header>
     <main class="shell">
       <aside class="rail" aria-label="Saved builds">
-        <div class="brand">
-          <div class="brand-mark">J</div>
-          <div>
-            <h1>JankBot</h1>
-            <p>Scryfall deck intelligence</p>
-          </div>
-        </div>
-
-        <button class="sync-button" id="syncButton" type="button">
+        <details class="library-drawer" id="libraryDrawer" open>
+        <summary><span class="icon icon-book-open" aria-hidden="true"></span>Your spellbook</summary>
+        <button class="sync-button" id="syncButton" type="button" hidden>
           <span class="icon">R</span>
           <span>Refresh Scryfall</span>
         </button>
-        <button class="model-button" id="pullModelButton" type="button">
+        <button class="model-button" id="pullModelButton" type="button" hidden>
           <span class="icon">M</span>
           <span>Pull Ollama Model</span>
         </button>
 
         <section>
-          <h2>Builds</h2>
+          <h2>Saved builds</h2>
           <div class="history" id="history"></div>
         </section>
 
         <section class="status-card">
-          <h2>Status</h2>
+          <h2>The archive</h2>
           <dl>
             <div>
               <dt>Cards</dt>
@@ -52,13 +52,15 @@
             </div>
           </dl>
         </section>
+        <a class="art-credit" href="/credits.txt" target="_blank" rel="noopener noreferrer">Card art &amp; credits</a>
+        </details>
       </aside>
 
       <section class="chat-panel" aria-label="Chat">
         <div class="chat-top">
           <div>
-            <p class="eyebrow">Budget-first synergy engine</p>
-            <h2>Ask for a card or a complete deck</h2>
+            <p class="eyebrow">Drafting table</p>
+            <h2>Deck workshop</h2>
           </div>
           <div class="selectors">
             <label>
@@ -72,41 +74,41 @@
               </select>
             </label>
             <label>
-              <span>Budget cap</span>
-              <input id="maxPrice" type="number" min="0.25" max="50" step="0.25" value="2">
+              <span>Card budget</span>
+              <input id="maxPrice" type="number" min="0.25" max="50" step="0.01" value="2" form="chatForm" required>
             </label>
           </div>
         </div>
 
-        <div class="messages" id="messages">
-          <article class="message assistant">
-            <div class="avatar">JB</div>
-            <div class="bubble">
-              <p>Give me a deck based around Teysa Karlov.</p>
-              <p>Give me a card that works well with Yarok, the Desecrated.</p>
+        <div class="messages" id="messages" role="log" aria-label="Conversation" aria-live="polite">
+          <section class="opening" id="opening">
+            <p class="eyebrow">A legend. A plan. Ninety-nine cards.</p>
+            <h3>Choose your commander</h3>
+            <div class="commander-gallery">
+              <button type="button" class="commander-choice" data-commander="Teysa Karlov"><img src="/card-teysa.jpg" alt="Teysa Karlov Magic card" width="488" height="680"><span>Teysa Karlov</span><small>Death &amp; sacrifice</small></button>
+              <button type="button" class="commander-choice" data-commander="Yarok, the Desecrated"><img src="/card-yarok.jpg" alt="Yarok, the Desecrated Magic card" width="488" height="680"><span>Yarok</span><small>Enter-the-battlefield value</small></button>
+              <button type="button" class="commander-choice" data-commander="Niv-Mizzet, Parun"><img src="/card-niv.jpg" alt="Niv-Mizzet, Parun Magic card" width="488" height="680"><span>Niv-Mizzet</span><small>Draw &amp; spells</small></button>
             </div>
-          </article>
+          </section>
         </div>
 
         <form class="composer" id="chatForm">
           <div class="autocomplete-wrap">
-            <input id="messageInput" autocomplete="off" placeholder="Give me a deck based around Niv-Mizzet, Parun." aria-label="Chat message">
-            <div class="suggestions" id="suggestions"></div>
+            <input id="messageInput" autocomplete="off" placeholder="Build a deck around your favorite card..." aria-label="Chat message" aria-autocomplete="list" aria-controls="suggestions" maxlength="700">
+            <div class="suggestions" id="suggestions" aria-label="Card name suggestions"></div>
           </div>
-          <button type="submit" aria-label="Send">
-            <span>Send</span>
-            <span class="icon">&gt;</span>
+          <button type="submit" aria-label="Send" title="Send request">
+            <span class="icon icon-send" aria-hidden="true"></span>
           </button>
         </form>
       </section>
 
       <aside class="inspector" aria-label="Deck inspector">
         <div class="hero-card" id="heroCard">
-          <div class="card-art-placeholder"></div>
+          <div class="empty-card-slot"><span class="icon icon-layers" aria-hidden="true"></span></div>
           <div>
-            <p class="eyebrow">Anchor</p>
-            <h2>No card selected</h2>
-            <p>Ask JankBot for a recommendation and the card analysis will appear here.</p>
+            <p class="eyebrow">On the table</p>
+            <h2>No active build</h2>
           </div>
         </div>
 
@@ -133,8 +135,8 @@
           <div class="section-title">
             <h2>Mana Curve</h2>
             <div class="toolbar-actions">
-              <button id="editDeckButton" type="button" disabled>Edit</button>
-              <button id="exportButton" type="button" disabled>Export</button>
+              <button id="editDeckButton" class="icon-button" type="button" aria-label="Edit deck" title="Edit deck" disabled><span class="icon icon-pencil-line" aria-hidden="true"></span></button>
+              <button id="exportButton" class="icon-button" type="button" aria-label="Export deck" title="Export deck" disabled><span class="icon icon-download" aria-hidden="true"></span></button>
             </div>
           </div>
           <div class="curve" id="curve"></div>
@@ -151,10 +153,10 @@
       <form method="dialog" class="editor-shell">
         <header class="editor-header">
           <div>
-            <p class="eyebrow">Validated deck editor</p>
+            <p class="eyebrow">Deck workshop</p>
             <h2 id="editorTitle">Edit deck</h2>
           </div>
-          <button class="icon-button" id="closeEditorButton" type="button" aria-label="Close editor">X</button>
+          <button class="icon-button" id="closeEditorButton" type="button" aria-label="Close editor" title="Close editor"><span class="icon icon-x" aria-hidden="true"></span></button>
         </header>
 
         <section class="editor-summary">
@@ -177,7 +179,7 @@
             <span>Add card</span>
             <input id="editorAddInput" autocomplete="off" placeholder="Search Scryfall card name">
           </label>
-          <button id="editorAddButton" type="button">Add</button>
+          <button id="editorAddButton" type="button"><span class="icon icon-plus" aria-hidden="true"></span>Add</button>
           <div class="editor-suggestions" id="editorSuggestions"></div>
         </div>
 
@@ -190,12 +192,31 @@
         </div>
 
         <footer class="editor-footer">
-          <button id="validateEditorButton" type="button">Validate</button>
+          <button id="validateEditorButton" type="button"><span class="icon icon-check" aria-hidden="true"></span>Validate</button>
           <button id="saveEditorButton" type="button" disabled>Save edits</button>
         </footer>
       </form>
     </dialog>
 
-    <script src="/app.js"></script>
+    <dialog class="access-dialog" id="demoAccess" aria-labelledby="demoAccessTitle">
+      <div>
+        <p class="eyebrow">JankBot</p>
+        <h2 id="demoAccessTitle">Demo invitation required</h2>
+        <p>Open the JankBot link from my resume or personal website.</p>
+        <p id="demoAccessError" class="invalid-text" role="alert"></p>
+      </div>
+    </dialog>
+    <dialog class="access-dialog" id="signOutDialog" aria-labelledby="signOutTitle" aria-describedby="signOutDescription">
+      <h2 id="signOutTitle">Sign out of JankBot?</h2>
+      <p id="signOutDescription">You will need to reopen the invitation link to return. Your saved decks will remain in this browser.</p>
+      <p id="signOutError" class="invalid-text" role="alert"></p>
+      <div class="sign-out-actions">
+        <button id="cancelSignOut" type="button" autofocus>Cancel</button>
+        <button id="confirmSignOut" type="button"><span class="icon icon-log-out" aria-hidden="true"></span>Sign out</button>
+      </div>
+    </dialog>
+    <script src="/access.js?v=workshop-7"></script>
+    <script src="/storage.js?v=workshop-7"></script>
+    <script src="/app.js?v=workshop-7"></script>
   </body>
 </html>

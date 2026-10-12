@@ -1,0 +1,7 @@
+.git
+data
+.runtime
+node_modules
+test
+.env*
+*.log

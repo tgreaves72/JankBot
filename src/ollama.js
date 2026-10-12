@@ -122,7 +122,8 @@ function validateMentionedCards(mentionedCards, allowedNames) {
 }
 
 class OllamaClient {
-  constructor({ baseUrl = DEFAULT_BASE_URL, model }) {
+  constructor({ baseUrl = DEFAULT_BASE_URL, model, demo = false }) {
+    this.demo = demo;
     this.baseUrl = String(baseUrl).replace(/\/$/, "");
     this.model = model;
   }
@@ -219,15 +220,16 @@ class OllamaClient {
       system,
       format,
       stream: false,
-      keep_alive: "2m",
+      keep_alive: "10m",
       options: {
         temperature,
         top_p: 0.85,
         repeat_penalty: 1.08,
         num_ctx: 4096,
-        num_predict: maxTokens
+        num_predict: maxTokens,
+        ...(this.demo ? { num_thread: 2, num_gpu: 0 } : {})
       }
-    }, { timeoutMs });
+    }, { timeoutMs: this.demo ? Math.min(timeoutMs, 90_000) : timeoutMs });
   }
 
   async parseIntent(message) {
@@ -250,7 +252,8 @@ class OllamaClient {
       "Rules:",
       "- build_deck means the user asks for a deck/list/shell around a card.",
       "- recommend_card means the user asks for one card, a compatible card, or a card that works well with another card.",
-      "- cardName must preserve the named card only, without braces, punctuation, or surrounding prose.",
+      "- Preserve the user's spelling exactly, including typos and internal punctuation. Remove only enclosing quotes/braces and surrounding prose.",
+      "- Never silently correct a name or substitute a different card. The catalog resolves spelling separately.",
       "- If a field is not explicit, use null except intent.",
       `User message: ${JSON.stringify(message)}`
     ].join("\n");
@@ -264,12 +267,17 @@ class OllamaClient {
       .replace(/[{}]/g, "")
       .replace(/[?.!]+$/g, "")
       .trim();
+    if (parsed.maxCardPriceUsd != null && (typeof parsed.maxCardPriceUsd !== "number"
+        || !Number.isFinite(parsed.maxCardPriceUsd) || parsed.maxCardPriceUsd < 0.25
+        || parsed.maxCardPriceUsd > 50)) {
+      throw new OllamaError("Ollama returned an invalid card price constraint.");
+    }
     return {
       intent,
       cardName,
       format: parsed.format || null,
       budgetMode: parsed.budgetMode || null,
-      maxCardPriceUsd: Number.isFinite(Number(parsed.maxCardPriceUsd)) ? Number(parsed.maxCardPriceUsd) : null,
+      maxCardPriceUsd: parsed.maxCardPriceUsd ?? null,
       source: "ollama"
     };
   }
@@ -291,6 +299,21 @@ class OllamaClient {
         topSynergyCards: result.mainboard.slice(0, 8).map(summarizeCardLite),
         sampleLands: result.mainboard.filter(item => item.roles.includes("land")).slice(0, 3).map(summarizeCardLite)
       };
+    const suppliedNames = intent === "recommend_card"
+      ? [anchor.name, compact.recommendation.name, ...compact.alternatives.map(card => card.name)]
+      : [anchor.name, ...compact.topSynergyCards.map(card => card.name), ...compact.sampleLands.map(card => card.name)];
+    const schema = {
+      type: "object", additionalProperties: false,
+      properties: {
+        answer: { type: "string", minLength: 8, maxLength: 360 },
+        synergySummary: { type: "array", minItems: 2, maxItems: 2,
+          items: { type: "string", minLength: 2, maxLength: 120 } },
+        budgetSummary: { type: "string", minLength: 8, maxLength: 160 },
+        mentionedCards: { type: "array", maxItems: 3,
+          items: { type: "string", enum: [...new Set(suppliedNames)] } }
+      },
+      required: ["answer", "synergySummary", "budgetSummary", "mentionedCards"]
+    };
 
     const system = [
       "You are JankBot, a precise Magic: The Gathering deckbuilding assistant.",
@@ -301,14 +324,11 @@ class OllamaClient {
     ].join(" ");
     const prompt = [
       "Write the user-facing answer for this MTG recommendation.",
-      "Schema:",
-      "{",
-      "  \"answer\": \"concise markdown-free explanation\",",
-      "  \"synergySummary\": [\"short point\", \"short point\"],",
-      "  \"budgetSummary\": \"short price/tradeoff note\",",
-      "  \"mentionedCards\": [\"only card names from the supplied data\"]",
-      "}",
+      `JSON schema: ${JSON.stringify(schema)}`,
       "Requirements:",
+      "- Keep the answer to one or two short sentences, at most 360 characters.",
+      "- Supply exactly two synergy points, each at most 120 characters, and a budget note at most 160 characters.",
+      "- List at most three mentioned card names, copied exactly from supplied data. Use an empty array if none.",
       "- Mention only cards present in Result data.",
       "- Explain why the scored card or deck works with the anchor.",
       "- Mention budget pressure using supplied prices only.",
@@ -316,23 +336,27 @@ class OllamaClient {
       "- Do not use markdown tables.",
       `User message: ${message}`,
       `Anchor card: ${JSON.stringify(summarizeCard(anchor))}`,
-      `Allowed card names: ${JSON.stringify(Array.from(allowedNames))}`,
       `Result data: ${JSON.stringify(compact)}`
     ].join("\n\n");
-    const generated = await this.generate({ prompt, system, format: "json", temperature: 0.08, timeoutMs: 300_000, maxTokens: 420 });
+    const generated = await this.generate({ prompt, system, format: schema, temperature: 0, timeoutMs: 300_000, maxTokens: 420 });
     const parsed = parseJsonObject(generated.response, "recommendation explanation");
-    const answer = assertString(parsed.answer, "answer", { min: 8, max: 2500 });
-    validateMentionedCards(parsed.mentionedCards || [], allowedNames);
-    const synergySummary = Array.isArray(parsed.synergySummary)
-      ? parsed.synergySummary
-      : typeof parsed.synergySummary === "string"
-        ? [parsed.synergySummary]
-        : [];
+    if (Object.keys(parsed).some(key => !Object.hasOwn(schema.properties, key))) {
+      throw new OllamaError("Ollama returned an unexpected explanation field.");
+    }
+    const answer = assertString(parsed.answer, "answer", { min: 8, max: 360 });
+    validateMentionedCards(parsed.mentionedCards, allowedNames);
+    validateMentionedCards(parsed.mentionedCards, new Set(suppliedNames));
+    if (parsed.mentionedCards.length > 3) throw new OllamaError("Ollama returned too many mentioned cards.");
+    if (!Array.isArray(parsed.synergySummary) || parsed.synergySummary.length !== 2) {
+      throw new OllamaError("Ollama must return exactly two synergy-summary items.");
+    }
+    const synergySummary = parsed.synergySummary.map(item => assertString(item, "synergySummary item", { min: 2, max: 120 }));
+    const budgetSummary = assertString(parsed.budgetSummary, "budgetSummary", { min: 8, max: 160 });
     return {
       text: composeAnswer({ anchor, result, intent, parsed: { ...parsed, answer } }),
-      synergySummary: synergySummary.map(item => assertString(item, "synergySummary item", { min: 2, max: 220 })).slice(0, 5),
-      budgetSummary: typeof parsed.budgetSummary === "string" ? parsed.budgetSummary.trim() : "",
-      mentionedCards: parsed.mentionedCards || [],
+      synergySummary,
+      budgetSummary,
+      mentionedCards: parsed.mentionedCards,
       usedOllama: true
     };
   }

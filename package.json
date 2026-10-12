@@ -6,6 +6,14 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
+    "setup": "node scripts/prepare-host.js",
+    "start:public": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-public.ps1",
+    "publish:free": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-free.ps1",
+    "stop:public": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-public.ps1",
+    "demo:add": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invitation.ps1",
+    "demo:revoke": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invitation.ps1 -Revoke",
+    "demo:link": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invitation.ps1 -Link",
+    "demo:rotate-link": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invitation.ps1 -RotateLink",
     "test": "node --test"
   },
   "keywords": [
@@ -18,6 +26,12 @@
   "author": "",
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
+  },
+  "dependencies": {
+    "fuse.js": "7.1.0"
+  },
+  "devDependencies": {
+    "lucide-static": "0.468.0"
   }
 }

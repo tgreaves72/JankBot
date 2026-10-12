@@ -3,6 +3,7 @@ const state = {
   activeCards: [],
   selectedIndex: null,
   history: [],
+  busy: false,
   editor: {
     cards: [],
     validation: null,
@@ -20,7 +21,17 @@ const editorDialog = $("#deckEditor");
 const editorAddInput = $("#editorAddInput");
 const editorSuggestions = $("#editorSuggestions");
 
+async function apiFetch(url, options) {
+  const response = await fetch(url, { ...options, signal: options?.signal || AbortSignal.timeout(15_000) });
+  if (response.status === 401) {
+    void JankBotAccess.lock();
+    throw new Error("Demo session expired. Reopen your JankBot invitation link to continue.");
+  }
+  return response;
+}
+
 function money(value) {
+  if (value == null) return "Unpriced";
   const number = Number(value);
   if (!Number.isFinite(number)) return "n/a";
   return `$${number.toFixed(2)}`;
@@ -35,6 +46,7 @@ function escapeHtml(value) {
 }
 
 function addMessage(role, html) {
+  $("#opening").hidden = true;
   const article = document.createElement("article");
   article.className = `message ${role}`;
   article.innerHTML = `
@@ -68,6 +80,8 @@ function summarizeResultTitle(payload) {
 }
 
 function renderHealth(data) {
+  $("#syncButton").hidden = !data.capabilities?.maintenance;
+  $("#pullModelButton").hidden = !data.capabilities?.maintenance;
   $("#cardCount").textContent = data.cache?.cardCount?.toLocaleString?.() || "not synced";
   $("#updatedAt").textContent = data.cache?.updatedAt ? new Date(data.cache.updatedAt).toLocaleString() : "not synced";
   const requested = data.ollama?.requestedModel || data.ollamaModel || "qwen2.5:0.5b";
@@ -82,8 +96,11 @@ function renderHealth(data) {
 }
 
 async function loadHealth() {
-  const response = await fetch("/api/health");
-  renderHealth(await response.json());
+  try {
+    const response = await apiFetch("/api/health");
+    if (!response.ok) throw new Error("Service unavailable");
+    renderHealth(await response.json());
+  } catch { $("#ollamaStatus").textContent = "Service unavailable"; }
 }
 
 function renderHero(item, mode = "Anchor") {
@@ -92,7 +109,7 @@ function renderHero(item, mode = "Anchor") {
   const image = cardImage(card);
   const roles = (item.roles || []).slice(0, 5).map(role => `<span>${escapeHtml(role)}</span>`).join("");
   $("#heroCard").innerHTML = `
-    ${image ? `<img class="card-art" src="${image}" alt="${escapeHtml(card.name)}">` : `<div class="card-art-placeholder"></div>`}
+    ${image && /^https:\/\/cards\.scryfall\.io\//.test(image) ? `<img class="card-art" src="${escapeHtml(image)}" alt="${escapeHtml(card.name)}" width="488" height="680" decoding="async">` : `<div class="card-art-placeholder">No card image</div>`}
     <div>
       <p class="eyebrow">${escapeHtml(mode)}</p>
       <h2>${escapeHtml(card.name)}</h2>
@@ -137,8 +154,10 @@ function renderDeck() {
     const card = item.card || item;
     const tags = (item.roles || []).slice(0, 4).map(role => `<span>${escapeHtml(role)}</span>`).join("");
     const active = index === state.selectedIndex ? " selected" : "";
+    const thumbnail = card.image_uris?.art_crop || card.card_faces?.[0]?.image_uris?.art_crop;
     return `
       <button class="deck-card${active}" type="button" data-index="${index}">
+        ${thumbnail && /^https:\/\/cards\.scryfall\.io\//.test(thumbnail) ? `<img class="deck-thumb" src="${escapeHtml(thumbnail)}" alt="" width="52" height="40" loading="lazy" decoding="async">` : '<span class="deck-thumb no-art" aria-hidden="true"></span>'}
         <span>
           <strong>${escapeHtml(card.name)}</strong>
           <small>${escapeHtml(card.type_line || "")}</small>
@@ -152,19 +171,22 @@ function renderDeck() {
 }
 
 function renderHistory() {
-  $("#history").innerHTML = state.history.map((entry, index) => `
+  $("#history").innerHTML = state.history.length ? state.history.map((entry, index) => `
     <button class="history-item" type="button" data-history-index="${index}">
       <strong>${escapeHtml(entry.title)}</strong>
       <span>${escapeHtml(entry.subtitle)}</span>
     </button>
-  `).join("");
+  `).join("") : '<p class="empty-history">No saved builds</p>';
 }
 
 function selectCard(index) {
   if (!state.activeCards[index]) return;
   state.selectedIndex = index;
   renderHero(state.activeCards[index], index === 0 && state.lastPayload?.result.kind === "commander_deck" ? "Commander" : "Selected card");
-  renderDeck();
+  for (const button of $("#decklist").querySelectorAll("[data-index]")) {
+    button.classList.toggle("selected", Number(button.dataset.index) === index);
+    button.setAttribute("aria-pressed", String(Number(button.dataset.index) === index));
+  }
 }
 
 function setActivePayload(payload, { addToHistory = true } = {}) {
@@ -186,41 +208,71 @@ function setActivePayload(payload, { addToHistory = true } = {}) {
     });
     state.history = state.history.slice(0, 8);
     renderHistory();
+    void JankBotStorage.saveHistory(state.history).catch(error => addMessage("assistant", `<p>${escapeHtml(error.message)}</p>`));
   }
+}
+
+function completeChat(pending, payload) {
+  if (payload.kind === "clarification") {
+    const choices = payload.resolution.suggestions || [];
+    pending.clarification = payload;
+    pending.querySelector(".bubble").innerHTML = `
+      <p>${choices.length ? "Which card did you mean?" : "I couldn't find a matching card in the archive."}</p>
+      <p class="query-note">${escapeHtml(payload.resolution.query)}</p>
+      <div class="card-choices">${choices.map((card, index) => `<button type="button" class="card-choice" data-confirm-index="${index}">
+        ${/^https:\/\/cards\.scryfall\.io\//.test(card.image) ? `<img src="${escapeHtml(card.image)}" width="44" height="61" alt="" loading="lazy">` : ""}
+        <span><strong>${escapeHtml(card.name)}</strong><small>${escapeHtml(card.type_line || "")}</small></span><span>${money(card.price)}</span>
+      </button>`).join("")}</div>`;
+    input.value = payload.message;
+    return;
+  }
+  pending.querySelector(".bubble").innerHTML = formatAssistant(payload);
+  setActivePayload(payload);
 }
 
 function formatAssistant(payload) {
   const result = payload.result;
   const modelLine = payload.model.used
-    ? `<small>Explained by ${escapeHtml(payload.model.name)} using validated Scryfall data.</small>`
+    ? `<small>${escapeHtml(payload.model.name)} &middot; Scryfall${payload.timing?.totalMs ? ` &middot; ${(payload.timing.totalMs / 1000).toFixed(1)}s` : ""}</small>`
     : `<small>Validated result.</small>`;
+  const correction = payload.resolution?.status === "corrected" ? `<p class="correction-note">Using <strong>${escapeHtml(payload.resolution.name)}</strong> for &ldquo;${escapeHtml(payload.resolution.query)}&rdquo;.</p>` : "";
   if (result.kind === "single_card") {
     const rec = result.recommendation;
     return `
+      ${correction}
       <p>${escapeHtml(payload.response.text)}</p>
       <p><strong>${escapeHtml(rec.card.name)}</strong> - ${money(rec.card.cheapest_usd)} - score ${rec.score.toFixed(2)}</p>
       ${modelLine}
     `;
   }
   return `
+    ${correction}
     <p>${escapeHtml(payload.response.text)}</p>
     <p><strong>${escapeHtml(payload.anchor.name)}</strong> - ${result.cards.length} cards - ${money(result.totalEstimatedUsd)}</p>
     ${modelLine}
   `;
 }
 
+const autocompleteRequests = new WeakMap();
 async function autocompleteInto(target, menu, fragment) {
+  autocompleteRequests.get(menu)?.abort();
+  const controller = new AbortController();
+  autocompleteRequests.set(menu, controller);
+  const original = target.value;
   if (fragment.trim().length < 2) {
     menu.style.display = "none";
     return;
   }
-  const response = await fetch(`/api/autocomplete?q=${encodeURIComponent(fragment.trim())}`);
+  const response = await apiFetch(`/api/autocomplete?q=${encodeURIComponent(fragment.trim())}`, { signal: controller.signal });
+  if (!response.ok) throw new Error("Card suggestions are unavailable.");
   const data = await response.json();
+  if (controller.signal.aborted || target.value !== original) return;
   if (!data.data?.length) {
     menu.style.display = "none";
     return;
   }
-  menu.innerHTML = data.data.map(name => `<button type="button">${escapeHtml(name)}</button>`).join("");
+  menu.innerHTML = data.data.map((name, index) => `<button type="button" role="option" aria-selected="false" id="${menu.id}-${index}">${escapeHtml(name)}</button>`).join("");
+  menu.setAttribute("role", "listbox");
   menu.style.display = "block";
 }
 
@@ -239,7 +291,7 @@ function renderEditorList() {
           <span>${escapeHtml(card.type_line || "")}</span>
         </button>
         <span>${money(card.cheapest_usd)}</span>
-        <button type="button" class="remove-card" data-remove-index="${index}" ${isCommander ? "disabled" : ""}>Remove</button>
+        <button type="button" class="remove-card icon-button" aria-label="Remove ${escapeHtml(card.name)}" title="${isCommander ? "Commander slot is locked" : "Remove card"}" data-remove-index="${index}" ${isCommander ? "disabled" : ""}><span class="icon icon-trash-2" aria-hidden="true"></span></button>
       </article>
     `;
   }).join("");
@@ -260,25 +312,27 @@ function renderEditorValidation(validationResult) {
 }
 
 async function validateEditor() {
+  const revision = state.editor.revision;
   const payload = {
-    format: $("#format").value,
+    format: state.lastPayload.format || state.lastPayload.result.format || "commander",
     commander: state.lastPayload?.anchor?.name,
     cards: editorNames()
   };
-  const response = await fetch("/api/deck/validate", {
+  const response = await apiFetch("/api/deck/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "Deck validation failed");
+  if (revision !== state.editor.revision) throw new Error("Deck changed during validation. Validate the current draft.");
   state.editor.validation = result;
   renderEditorValidation(result);
   return result;
 }
 
 async function addEditorCard(name) {
-  const response = await fetch(`/api/card?name=${encodeURIComponent(name)}`);
+  const response = await apiFetch(`/api/card?name=${encodeURIComponent(name)}`);
   const card = await response.json();
   if (!response.ok) throw new Error(card.error || "Card not found");
   state.editor.cards.push({
@@ -288,6 +342,8 @@ async function addEditorCard(name) {
     reasons: ["manual add"]
   });
   state.editor.dirty = true;
+  state.editor.validation = null;
+  state.editor.revision++;
   renderEditorList();
   renderEditorValidation(null);
 }
@@ -297,6 +353,7 @@ function openEditor() {
   state.editor.cards = structuredClone(state.activeCards);
   state.editor.validation = state.lastPayload.result;
   state.editor.dirty = false;
+  state.editor.revision = 0;
   $("#editorTitle").textContent = `Edit ${state.lastPayload.anchor.name}`;
   editorAddInput.value = "";
   editorSuggestions.style.display = "none";
@@ -327,41 +384,121 @@ function saveEditor(validationResult) {
   editorDialog.close();
 }
 
-form.addEventListener("submit", async event => {
-  event.preventDefault();
-  const message = input.value.trim();
-  if (!message) return;
+function setChatBusy(busy) {
+  $("#demoSignOut").disabled = busy;
+  state.busy = busy;
+  form.querySelector('[type="submit"]').disabled = busy;
+  input.disabled = busy;
+  form.setAttribute("aria-busy", String(busy));
+}
+
+async function pollChatJob(jobId, pending) {
+  const deadline = Date.now() + 15 * 60_000;
+  while (Date.now() < deadline) {
+    const response = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}`, { signal: AbortSignal.timeout(15_000) });
+    const job = await response.json();
+    if (!response.ok) {
+      if (response.status === 404) sessionStorage.removeItem("jankbot_job");
+      throw new Error(job.error || "Cannot load your request.");
+    }
+    if (job.status === "failed") {
+      sessionStorage.removeItem("jankbot_job");
+      throw new Error(job.error.message);
+    }
+    if (job.status === "complete") {
+      sessionStorage.removeItem("jankbot_job");
+      completeChat(pending, job.result);
+      return;
+    }
+    const elapsed = Math.floor((Date.now() - job.createdAt) / 1000);
+    pending.querySelector(".bubble").textContent = `${job.status === "queued" ? `In queue, position ${job.position}` : job.stage} (${elapsed}s)`;
+    await new Promise(resolve => setTimeout(resolve, 800));
+  }
+  throw new Error("Request took too long. Reload to reconnect to your request.");
+}
+
+async function sendChat({ message = input.value.trim(), anchorName, intent, format = $("#format").value, maxPrice = Number($("#maxPrice").value) } = {}) {
+  if (!message || state.busy) return;
+  const budgetInput = $("#maxPrice");
+  budgetInput.setCustomValidity(Number.isFinite(maxPrice) && maxPrice >= 0.25 && maxPrice <= 50
+    ? "" : "Enter a card budget between $0.25 and $50.");
+  if (!budgetInput.reportValidity()) return;
+  setChatBusy(true);
   input.value = "";
   suggestions.style.display = "none";
   addMessage("user", `<p>${escapeHtml(message)}</p>`);
-  const pending = addMessage("assistant", `<p class="loading">Searching Scryfall, scoring synergy, checking legality, and asking Ollama for a validated response...</p>`);
+  const pending = addMessage("assistant", `<p class="loading">Checking the archive...</p>`);
   try {
-    const response = await fetch("/api/chat", {
+    const response = await apiFetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message,
-        format: $("#format").value,
-        maxPrice: Number($("#maxPrice").value || 2)
+        format, maxPrice, anchorName, intent
       })
     });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Request failed");
-    pending.querySelector(".bubble").innerHTML = formatAssistant(payload);
-    setActivePayload(payload);
-    loadHealth();
+    const accepted = await response.json();
+    if (!response.ok) throw new Error(accepted.error || "Request failed");
+    if (accepted.kind === "clarification") { completeChat(pending, accepted); return; }
+    sessionStorage.setItem("jankbot_job", accepted.jobId);
+    await pollChatJob(accepted.jobId, pending);
   } catch (error) {
     pending.querySelector(".bubble").innerHTML = `<p>${escapeHtml(error.message)}</p>`;
+    if (!input.value) input.value = message;
+  } finally {
+    setChatBusy(false);
   }
+}
+
+$("#maxPrice").addEventListener("input", event => event.target.setCustomValidity(""));
+form.addEventListener("submit", event => { event.preventDefault(); void sendChat(); });
+messages.addEventListener("click", event => {
+  const button = event.target.closest("[data-confirm-index]");
+  if (!button || state.busy) return;
+  const request = button.closest(".message").clarification;
+  const selected = request?.resolution.suggestions[Number(button.dataset.confirmIndex)];
+  if (!selected) return;
+  void sendChat({ message: request.message, anchorName: selected.name, intent: request.resolution.intent,
+    format: request.format, maxPrice: request.maxPrice });
+});
+$("#opening").addEventListener("click", event => {
+  const button = event.target.closest("[data-commander]");
+  if (!button) return;
+  input.value = `Give me a deck based around ${button.dataset.commander}.`;
+  input.focus();
 });
 
 let autocompleteTimer;
 input.addEventListener("input", () => {
+  autocompleteRequests.get(suggestions)?.abort();
   clearTimeout(autocompleteTimer);
   const text = input.value;
   const fragment = text.match(/(?:around|with|for)\s+([^?.!]*)$/i)?.[1] || text;
-  autocompleteTimer = setTimeout(() => autocompleteInto(input, suggestions, fragment), 220);
+  autocompleteTimer = setTimeout(() => autocompleteInto(input, suggestions, fragment).catch(error => {
+    if (error.name === "AbortError") return;
+    suggestions.style.display = "none";
+    $("#ollamaStatus").textContent = error.message;
+  }), 220);
 });
+
+function suggestionKeyboard(target, menu) {
+  target.addEventListener("keydown", event => {
+    if (menu.style.display !== "block") return;
+    const buttons = Array.from(menu.querySelectorAll("button"));
+    if (!buttons.length) return;
+    const active = buttons.findIndex(button => button.getAttribute("aria-selected") === "true");
+    if (["ArrowDown", "ArrowUp"].includes(event.key)) {
+      event.preventDefault();
+      const next = active < 0 ? (event.key === "ArrowDown" ? 0 : buttons.length - 1)
+        : (active + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+      buttons.forEach((button, index) => button.setAttribute("aria-selected", String(index === next)));
+      target.setAttribute("aria-activedescendant", buttons[next].id);
+    } else if (event.key === "Enter" && active >= 0) { event.preventDefault(); buttons[active].click(); }
+    else if (event.key === "Escape") { event.preventDefault(); menu.style.display = "none"; target.removeAttribute("aria-activedescendant"); }
+  });
+}
+suggestionKeyboard(input, suggestions);
+suggestionKeyboard(editorAddInput, editorSuggestions);
 
 suggestions.addEventListener("click", event => {
   const button = event.target.closest("button");
@@ -439,6 +576,8 @@ $("#editorList").addEventListener("click", event => {
   if (remove) {
     state.editor.cards.splice(Number(remove.dataset.removeIndex), 1);
     state.editor.dirty = true;
+    state.editor.validation = null;
+    state.editor.revision++;
     renderEditorList();
     renderEditorValidation(null);
     return;
@@ -451,8 +590,13 @@ $("#editorList").addEventListener("click", event => {
 
 let editorAutocompleteTimer;
 editorAddInput.addEventListener("input", () => {
+  autocompleteRequests.get(editorSuggestions)?.abort();
   clearTimeout(editorAutocompleteTimer);
-  editorAutocompleteTimer = setTimeout(() => autocompleteInto(editorAddInput, editorSuggestions, editorAddInput.value), 220);
+  editorAutocompleteTimer = setTimeout(() => autocompleteInto(editorAddInput, editorSuggestions, editorAddInput.value).catch(error => {
+    if (error.name === "AbortError") return;
+    editorSuggestions.style.display = "none";
+    $("#editorValidation").textContent = error.message;
+  }), 220);
 });
 
 editorSuggestions.addEventListener("click", event => {
@@ -483,8 +627,10 @@ $("#validateEditorButton").addEventListener("click", async () => {
 });
 
 $("#saveEditorButton").addEventListener("click", async () => {
+  const button = $("#saveEditorButton");
+  button.disabled = true;
   try {
-    const validation = state.editor.validation?.validation?.ok ? state.editor.validation : await validateEditor();
+    const validation = await validateEditor();
     if (!validation.validation.ok) return;
     saveEditor(validation);
   } catch (error) {
@@ -493,4 +639,30 @@ $("#saveEditorButton").addEventListener("click", async () => {
   }
 });
 
-loadHealth();
+async function initialize() {
+  await JankBotAccess.ensure();
+  const health = loadHealth();
+  try {
+    state.history = await JankBotStorage.loadHistory();
+    renderHistory();
+    if (state.history.length) setActivePayload(structuredClone(state.history[0].payload), { addToHistory: false });
+  } catch (error) { addMessage("assistant", `<p>${escapeHtml(error.message)}</p>`); }
+  await health;
+  const jobId = sessionStorage.getItem("jankbot_job");
+  if (jobId) {
+    setChatBusy(true);
+    const pending = addMessage("assistant", "<p>Reconnecting to your request...</p>");
+    try { await pollChatJob(jobId, pending); }
+    catch (error) { pending.querySelector(".bubble").textContent = error.message; }
+    finally { setChatBusy(false); }
+  }
+}
+
+const libraryViewport = window.matchMedia("(min-width: 1000px)");
+$("#libraryDrawer").open = libraryViewport.matches;
+libraryViewport.addEventListener("change", event => { $("#libraryDrawer").open = event.matches; });
+
+void initialize().catch(error => {
+  $("#ollamaStatus").textContent = error.message;
+  setChatBusy(true);
+});

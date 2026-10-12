@@ -36,12 +36,22 @@ const STOP_WORDS = new Set([
   "creature", "target", "battlefield", "mana", "turn", "until", "each", "whenever", "when", "where"
 ]);
 
-function roles(card) {
+const cardFeatures = new WeakMap();
+function features(card) {
+  if (cardFeatures.has(card)) return cardFeatures.get(card);
   const text = asText(card);
   const found = ROLE_PATTERNS.filter(([, pattern]) => pattern.test(text)).map(([role]) => role);
-  if (/land/.test(card.type_line.toLowerCase())) found.push("land");
+  if (/\bland\b/i.test(card.type_line)) found.push("land");
   if (/creature/.test(card.type_line.toLowerCase())) found.push("creature");
-  return Array.from(new Set(found));
+  const value = { text, roles: Array.from(new Set(found)), words: uniqueWords(text), name: normalizeName(card.name) };
+  value.roleSet = new Set(value.roles);
+  value.wordSet = new Set(value.words);
+  cardFeatures.set(card, value);
+  return value;
+}
+
+function roles(card) {
+  return [...features(card).roles];
 }
 
 function priceScore(card, maxPrice = 2) {
@@ -58,16 +68,15 @@ function popularityScore(card) {
 }
 
 function overlapScore(anchor, card) {
-  const anchorText = asText(anchor);
-  const cardText = asText(card);
-  const anchorWords = uniqueWords(anchorText);
-  const cardWords = new Set(uniqueWords(cardText));
-  const hits = anchorWords.filter(word => cardWords.has(word));
+  const a = features(anchor);
+  const c = features(card);
+  const anchorText = a.text;
+  const cardText = c.text;
+  const hits = a.words.filter(word => c.wordSet.has(word));
 
   let score = Math.min(0.45, hits.length * 0.035);
-  const anchorRoles = new Set(roles(anchor));
-  for (const role of roles(card)) {
-    if (anchorRoles.has(role)) score += 0.08;
+  for (const role of c.roles) {
+    if (a.roleSet.has(role)) score += 0.08;
   }
 
   for (const keyword of anchor.keywords || []) {
@@ -96,7 +105,7 @@ function curveScore(card) {
 }
 
 function scoreCard(anchor, card, constraints = {}) {
-  if (normalizeName(anchor.name) === normalizeName(card.name)) return null;
+  if (features(anchor).name === features(card).name) return null;
   const r = roles(card);
   const synergy = overlapScore(anchor, card);
   const roleFit = r.includes("land") ? 0.25 : Math.min(1, r.length * 0.18 + 0.25);
@@ -118,8 +127,8 @@ function scoreCard(anchor, card, constraints = {}) {
 }
 
 function reasons(anchor, card, cardRoles) {
-  const text = asText(card);
-  const anchorText = asText(anchor);
+  const text = features(card).text;
+  const anchorText = features(anchor).text;
   const out = [];
   if (cardRoles.length) out.push(`fills ${cardRoles.slice(0, 3).join(", ")}`);
   if (/token/.test(anchorText) && /token/.test(text)) out.push("shares the token plan");
@@ -164,30 +173,22 @@ function addRole(deck, used, ranked, role, count) {
   }
 }
 
-function basicLandsFor(commander, count) {
+function basicLandsFor(commander, count, store) {
   const map = { W: "Plains", U: "Island", B: "Swamp", R: "Mountain", G: "Forest" };
   const colors = commander.color_identity?.length ? commander.color_identity : ["C"];
   if (colors.includes("C") && colors.length === 1) {
-    return Array.from({ length: count }, () => ({ card: basic("Wastes"), roles: ["land"], score: 0.5, reasons: ["basic mana source"] }));
+    const card = store.byName.get("Wastes");
+    if (!card) throw new Error("Wastes is missing from the Scryfall index.");
+    return Array.from({ length: count }, () => ({ card, roles: ["land"], score: 0.5, reasons: ["basic mana source"] }));
   }
   const lands = [];
   for (let i = 0; i < count; i++) {
-    lands.push({ card: basic(map[colors[i % colors.length]]), roles: ["land"], score: 0.5, reasons: ["basic mana source"] });
+    const name = map[colors[i % colors.length]];
+    const card = store.byName.get(name);
+    if (!card) throw new Error(`${name} is missing from the Scryfall index.`);
+    lands.push({ card, roles: ["land"], score: 0.5, reasons: ["basic mana source"] });
   }
   return lands;
-}
-
-function basic(name) {
-  return {
-    name,
-    type_line: "Basic Land",
-    cmc: 0,
-    color_identity: [],
-    legalities: { commander: "legal" },
-    cheapest_usd: 0.05,
-    image_uris: {},
-    oracle_text: ""
-  };
 }
 
 async function buildCommanderDeck({ commander, store, constraints }) {
@@ -220,7 +221,7 @@ async function buildCommanderDeck({ commander, store, constraints }) {
   }
 
   const basicCount = Math.max(0, 99 - deck.length);
-  deck.push(...basicLandsFor(commander, basicCount));
+  deck.push(...basicLandsFor(commander, basicCount, store));
 
   const allCards = [{ card: commander, roles: ["commander"], score: 1, reasons: ["anchor card"] }, ...deck].slice(0, 100);
   const total = allCards.reduce((sum, item) => sum + (Number(item.card.cheapest_usd) || 0), 0);
@@ -237,6 +238,7 @@ async function buildCommanderDeck({ commander, store, constraints }) {
 
   return {
     kind: "commander_deck",
+    format: "commander",
     commander,
     cards: allCards,
     mainboard: deck,
@@ -256,7 +258,7 @@ function validateCommanderDeck(commander, allCards) {
   const commanderName = normalizeName(commander.name);
   if (allCards.length !== 100) errors.push(`Commander deck must contain 100 cards; found ${allCards.length}.`);
   if (commander.legalities?.commander !== "legal") errors.push(`${commander.name} is not Commander legal.`);
-  if (!/legendary/i.test(commander.type_line || "") && !/can be your commander/i.test(commander.oracle_text || "")) {
+  if (!(/legendary/i.test(commander.type_line || "") && /creature/i.test(commander.type_line || "")) && !/can be your commander/i.test(commander.oracle_text || "")) {
     errors.push(`${commander.name} is not a legal commander candidate.`);
   }
   for (const item of allCards) {
@@ -267,7 +269,7 @@ function validateCommanderDeck(commander, allCards) {
     for (const color of item.card.color_identity || []) {
       if (!allowed.has(color)) errors.push(`${name} is outside ${commander.name}'s color identity.`);
     }
-    if (item.card.legalities?.commander && item.card.legalities.commander !== "legal") {
+    if (item.card.legalities?.commander !== "legal") {
       errors.push(`${name} is not Commander legal.`);
     }
   }

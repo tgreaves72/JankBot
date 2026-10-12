@@ -1,5 +1,10 @@
 const fs = require("node:fs/promises");
+const { createReadStream } = require("node:fs");
 const path = require("node:path");
+const { Readable } = require("node:stream");
+const { createGunzip } = require("node:zlib");
+const { createInterface } = require("node:readline");
+const { CardNames, normalizeName } = require("./card-names");
 
 const SCRYFALL_ROOT = "https://api.scryfall.com";
 const MIN_INTERVAL_MS = 125;
@@ -9,12 +14,13 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function normalizeName(name) {
-  return String(name || "")
-    .toLowerCase()
-    .replace(/[’']/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
+async function* jsonLines(stream) {
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (line.trim()) yield JSON.parse(line);
+    }
+  } finally { lines.close(); }
 }
 
 function asText(card) {
@@ -73,9 +79,16 @@ class ScryfallClient {
     this.appName = appName;
     this.contact = contact;
     this.lastRequest = 0;
+    this.queue = Promise.resolve();
   }
 
-  async request(endpoint, params = {}) {
+  request(endpoint, params = {}) {
+    const task = this.queue.then(() => this.performRequest(endpoint, params));
+    this.queue = task.catch(() => {});
+    return task;
+  }
+
+  async performRequest(endpoint, params = {}) {
     const elapsed = Date.now() - this.lastRequest;
     if (elapsed < MIN_INTERVAL_MS) {
       await sleep(MIN_INTERVAL_MS - elapsed);
@@ -88,6 +101,7 @@ class ScryfallClient {
     });
     this.lastRequest = Date.now();
     const response = await fetch(url, {
+      signal: AbortSignal.timeout(30_000),
       headers: {
         "User-Agent": `${this.appName} (${this.contact})`,
         "Accept": "application/json;q=0.9,*/*;q=0.8"
@@ -118,15 +132,20 @@ class ScryfallClient {
 }
 
 class CardStore {
-  constructor({ dataDir, scryfall }) {
+  constructor({ dataDir, scryfall, snapshotOnly = false }) {
+    this.snapshotOnly = snapshotOnly;
     this.dataDir = dataDir;
     this.scryfall = scryfall;
-    this.cardsPath = path.join(dataDir, "oracle-cards.compact.json");
+    this.cardsPath = path.join(dataDir, snapshotOnly ? "oracle-cards.compact.jsonl" : "oracle-cards.compact.json");
     this.metaPath = path.join(dataDir, "metadata.json");
     this.cards = [];
     this.byName = new Map();
     this.byNormalizedName = new Map();
     this.loaded = false;
+    this.initializing = null;
+    this.refreshing = null;
+    this.checkedAt = 0;
+    this.candidateCache = new Map();
   }
 
   async ensureDataDir() {
@@ -142,19 +161,32 @@ class CardStore {
   }
 
   async ensureReady() {
-    await this.ensureDataDir();
-    if (this.loaded) return;
-    try {
-      await this.load();
-      const meta = await this.metadata();
-      if (!meta.updatedAt || Date.now() - new Date(meta.updatedAt).getTime() > BULK_MAX_AGE_MS) {
-        this.refreshBulkData().catch(error => {
-          console.warn(`Background Scryfall refresh failed: ${error.message}`);
-        });
-      }
-    } catch {
-      await this.refreshBulkData();
+    if (this.loaded && Date.now() - this.checkedAt < 60_000) return;
+    if (!this.initializing) {
+      this.initializing = this.prepareIndex().finally(() => { this.initializing = null; });
     }
+    await this.initializing;
+  }
+
+  async prepareIndex() {
+    if (this.snapshotOnly) {
+      if (!this.loaded) await this.load();
+      const meta = await this.metadata();
+      if (!meta.loaded || !Number.isFinite(Date.parse(meta.updatedAt)) || Date.now() - Date.parse(meta.updatedAt) > 7 * BULK_MAX_AGE_MS) {
+        throw new Error("The demo card snapshot expired. The host must refresh and redeploy it.");
+      }
+      this.checkedAt = Date.now();
+      return;
+    }
+    await this.ensureDataDir();
+    if (!this.loaded) {
+      try { await this.load(); } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+    const meta = await this.metadata();
+    if (!this.loaded || !meta.updatedAt || Date.now() - new Date(meta.updatedAt).getTime() > BULK_MAX_AGE_MS) await this.refreshBulkData();
+    this.checkedAt = Date.now();
   }
 
   index(cards) {
@@ -166,39 +198,69 @@ class CardStore {
       this.byNormalizedName.set(normalizeName(card.name), card);
     }
     this.loaded = true;
+    this.nameIndex = new CardNames(cards);
+    this.candidateCache.clear();
   }
 
   async load() {
-    const cards = JSON.parse(await fs.readFile(this.cardsPath, "utf8"));
+    let cards;
+    if (this.snapshotOnly) {
+      cards = [];
+      for await (const card of jsonLines(createReadStream(this.cardsPath))) cards.push(card);
+      if (!cards.length) throw new Error("The demo snapshot is empty.");
+    } else cards = JSON.parse(await fs.readFile(this.cardsPath, "utf8"));
     this.index(cards);
   }
 
   async refreshBulkData() {
+    if (!this.refreshing) {
+      this.refreshing = this.downloadBulkData().finally(() => { this.refreshing = null; });
+    }
+    return this.refreshing;
+  }
+
+  async downloadBulkData() {
     await this.ensureDataDir();
     const bulk = await this.scryfall.bulkData();
     const oracle = bulk.data.find(item => item.type === "oracle_cards")
       || bulk.data.find(item => item.name === "Oracle Cards");
-    if (!oracle?.download_uri) {
+    if (!oracle?.jsonl_download_uri) {
       throw new Error("Scryfall did not provide an Oracle Cards bulk download.");
     }
 
-    const response = await fetch(oracle.download_uri, {
+    const response = await fetch(oracle.jsonl_download_uri, {
+      signal: AbortSignal.timeout(180_000),
       headers: {
-        "User-Agent": "JankBot/1.0 (local-user@example.com)",
+        "User-Agent": `${this.scryfall.appName} (${this.scryfall.contact})`,
         "Accept": "application/json;q=0.9,*/*;q=0.8"
       }
     });
     if (!response.ok) {
       throw new Error(`Bulk download failed: ${response.status}`);
     }
-    const raw = await response.json();
-    const cards = raw
-      .filter(card => card.lang === "en")
-      .filter(card => !card.digital || card.games?.includes("paper"))
-      .filter(card => !["scheme", "vanguard", "token", "emblem"].some(type => String(card.type_line || "").toLowerCase().includes(type)))
-      .map(compactCard);
+    const input = Readable.fromWeb(response.body);
+    // fetch decodes HTTP Content-Encoding; .gz downloads without that header stay compressed.
+    const iterator = input[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    if (first.done) throw new Error("Scryfall supplied an empty bulk download.");
+    const source = Readable.from((async function* () {
+      yield first.value;
+      for (;;) { const next = await iterator.next(); if (next.done) return; yield next.value; }
+    })());
+    const compressed = first.value[0] === 0x1f && first.value[1] === 0x8b;
+    const decoded = compressed ? source.pipe(createGunzip()) : source;
+    if (compressed) source.on("error", error => decoded.destroy(error));
+    const cards = [];
+    for await (const card of jsonLines(decoded)) {
+      if (card.lang !== "en") continue;
+      if (card.digital && !card.games?.includes("paper")) continue;
+      if (["scheme", "vanguard", "token", "emblem"].some(type => String(card.type_line || "").toLowerCase().includes(type))) continue;
+      cards.push(compactCard(card));
+    }
 
-    await fs.writeFile(this.cardsPath, JSON.stringify(cards));
+    if (!cards.length) throw new Error("Scryfall supplied an empty card index.");
+    await fs.writeFile(`${this.cardsPath}.tmp`, JSON.stringify(cards));
+    await fs.rename(`${this.cardsPath}.tmp`, this.cardsPath);
     const meta = {
       loaded: true,
       updatedAt: new Date().toISOString(),
@@ -206,7 +268,8 @@ class CardStore {
       cardCount: cards.length,
       source: "Scryfall Oracle Cards bulk data"
     };
-    await fs.writeFile(this.metaPath, JSON.stringify(meta, null, 2));
+    await fs.writeFile(`${this.metaPath}.tmp`, JSON.stringify(meta, null, 2));
+    await fs.rename(`${this.metaPath}.tmp`, this.metaPath);
     this.index(cards);
     return meta;
   }
@@ -216,37 +279,38 @@ class CardStore {
     const normalized = normalizeName(name);
     const local = this.byNormalizedName.get(normalized);
     if (local) return local;
+    if (this.snapshotOnly) return null;
     try {
       const live = compactCard(await this.scryfall.named(name, "fuzzy"));
       return live;
-    } catch {
-      return null;
+    } catch (error) {
+      if (/not found|no cards found|couldn't find/i.test(error.message)) return null;
+      throw error;
     }
   }
 
   async autocomplete(q) {
     await this.ensureReady();
-    const needle = normalizeName(q);
-    const local = this.cards
-      .filter(card => normalizeName(card.name).includes(needle))
-      .slice(0, 12)
-      .map(card => card.name);
-    if (local.length >= 8) return local;
-    try {
-      const live = await this.scryfall.autocomplete(q);
-      return Array.from(new Set([...local, ...(live.data || [])])).slice(0, 12);
-    } catch {
-      return local;
-    }
+    return this.nameIndex.matches(q).map(({ card }) => card.name);
+  }
+
+  async inferCard(name) {
+    await this.ensureReady();
+    return this.nameIndex.resolve(name);
   }
 
   candidates({ colorIdentity = [], format = "commander" } = {}) {
+    const key = `${format}:${[...colorIdentity].sort().join("")}`;
+    if (this.candidateCache.has(key)) return this.candidateCache.get(key);
     const allowedColors = new Set(colorIdentity);
-    return this.cards.filter(card => {
+    const cards = this.cards.filter(card => {
       if (format && card.legalities?.[format] !== "legal") return false;
       if (card.games?.length && !card.games.includes("paper")) return false;
       return (card.color_identity || []).every(color => allowedColors.has(color));
     });
+    if (this.candidateCache.size >= 64) this.candidateCache.delete(this.candidateCache.keys().next().value);
+    this.candidateCache.set(key, cards);
+    return cards;
   }
 }
 
@@ -255,5 +319,6 @@ module.exports = {
   CardStore,
   normalizeName,
   asText,
-  cheapestUsd
+  cheapestUsd,
+  jsonLines
 };
