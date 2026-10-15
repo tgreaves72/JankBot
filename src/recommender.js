@@ -1,6 +1,6 @@
 const { normalizeName } = require("./card-names");
 const { features, roles, interactions } = require("./features");
-const { isLand, isBasic, copyLimit, eligibleCommander, canPair, validateCommanderDeck } = require("./deck-rules");
+const { isLand, isBasic, mainDeckIssue, commanderInclusionErrors, copyLimit, eligibleCommander, canPair, validateCommanderDeck } = require("./deck-rules");
 const { constraintsInput, priceStats } = require("./constraints");
 const TARGETS = { ramp: 10, draw: 10, removal: 8, wipe: 2, protection: 3, recursion: 3, finisher: 2 };
 const MINIMUMS = { ramp: 6, draw: 6, removal: 5 };
@@ -20,6 +20,7 @@ function scoreCard(anchor, card, constraints = {}) {
 async function rankedPool({ anchor, store, constraints }) {
   const excluded = new Set(constraints.excluded.map(normalizeName));
   return store.candidates({ format: constraints.format || "commander", colorIdentity: constraints.colorIdentity || anchor.color_identity || [] })
+    .filter(card => !mainDeckIssue(card) && ((constraints.format || "commander") !== "commander" || !commanderInclusionErrors(card, constraints.colorIdentity || anchor.color_identity || []).length))
     .filter(card => !excluded.has(normalizeName(card.name)) && (ownedCount(card, constraints) > 0 || card.cheapest_usd != null && card.cheapest_usd <= constraints.maxPrice))
     .map(card => scoreCard(anchor, card, constraints)).filter(Boolean).sort((a, b) => b.score - a.score || a.card.name.localeCompare(b.card.name));
 }
@@ -64,6 +65,10 @@ async function buildCommanderDeck({ commander, store, constraints: input = {} })
     const key = normalizeName(name);
     if (commanders.some(card => normalizeName(card.name) === key)) continue;
     const card = await store.resolveCard(name);
+    if (card) {
+      const issues = commanderInclusionErrors(card, colorIdentity);
+      if (issues.length) fail(issues.join(" "));
+    }
     if (!card || card.name !== name || excluded.has(key) || (card.color_identity || []).some(color => !colorIdentity.includes(color)) || card.legalities?.commander !== "legal") fail(`Locked card cannot be included: ${name}`);
     if ((counts.get(key) || 0) >= copyLimit(card)) fail(`Locked card exceeds its copy limit: ${name}`);
     add(scoreCard(commander, card, constraints)); locked.add(key);

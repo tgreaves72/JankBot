@@ -172,7 +172,8 @@ function renderMetrics(result) {
   const total = isDeck ? result.totalEstimatedUsd : result.recommendation.card.cheapest_usd;
   $("#totalPrice").textContent = money(total);
   $("#deckSize").textContent = isDeck ? result.cards.length : "1";
-  $("#validity").textContent = isDeck ? (result.validation.ok ? "Valid" : "Needs work") : "Legal";
+  $("#validity").textContent = isDeck ? (result.validation.ok ? "Passed" : "Needs work") : "Format legal";
+  $("#validity").title = isDeck ? result.validation.scope || "Local deck-construction checks" : "Snapshot format legality and main-deck eligibility";
   renderCurve(isDeck ? result.curve : { [Math.min(7, Math.floor(result.recommendation.card.cmc || 0))]: 1 });
   $("#priceCoverage").textContent = isDeck ? `Purchase estimate: ${money(result.purchaseEstimatedUsd)} · ${result.unpricedPurchases || 0} unpriced to buy · ${result.budget?.ok ? "within budget" : "budget needs validation"}. Prices as of ${state.metadata?.priceUpdatedAt ? new Date(state.metadata.priceUpdatedAt).toLocaleDateString() : "unknown"}. Shipping and tax excluded.` : "Tracked English paper nonfoil pricing; shipping and tax excluded.";
   $("#deckHealth").innerHTML = isDeck ? `<h3>Nonland roles</h3><dl class="role-counts">${Object.entries(result.quality?.targets || {}).map(([role, target]) => `<div><dt>${escapeHtml(role)}</dt><dd>${Number(result.roleCounts?.[role] || 0)} / ${target}</dd></div>`).join("")}</dl><h3>Mana sources</h3><p>${Object.entries(result.mana?.sources || {}).map(([color, count]) => `${escapeHtml(color)}: ${Number(count)}`).join(" · ")}</p><p>${escapeHtml(result.mana?.note || "Source analysis unavailable.")}</p><p>Bracket compatibility is not certified.</p><h3>Published combo evidence</h3>${renderComboEvidence(result)}` : "";
@@ -364,11 +365,11 @@ function renderEditorValidation(validationResult) {
   const ok = validation?.ok === true;
   $("#editorCount").textContent = state.editor.cards.length;
   $("#editorPrice").textContent = money(validationResult?.totalEstimatedUsd ?? state.editor.cards.reduce((sum, item) => sum + (Number(item.card.cheapest_usd) || 0), 0));
-  $("#editorStatus").textContent = validation ? (ok ? "Valid" : "Invalid") : "Unchecked";
+  $("#editorStatus").textContent = validation ? (ok ? "Passed" : "Invalid") : "Unchecked";
   $("#saveEditorButton").disabled = !ok;
   $("#editorValidation").innerHTML = `
     <h3>Validation</h3>
-    ${validation ? `<p class="${ok ? "valid-text" : "invalid-text"}">${ok ? "This deck is legal for the selected format." : "Resolve these issues before saving."}</p>` : "<p>Make an edit to check format legality.</p>"}
+    ${validation ? `<p class="${ok ? "valid-text" : "invalid-text"}">${ok ? "The checked deck-construction and budget rules pass." : "Resolve these issues before saving."}</p><p>${escapeHtml(validation.scope || "Local deck-construction checks; not a full rules simulation.")}</p>` : "<p>Make an edit to check format legality.</p>"}
     ${validation?.errors?.length ? `<ul>${validation.errors.map(error => `<li>${escapeHtml(error)}</li>`).join("")}</ul>` : ""}
   `;
 }

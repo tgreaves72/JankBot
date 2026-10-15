@@ -6,7 +6,7 @@ const { ScryfallClient, CardStore } = require("./src/scryfall");
 const { OllamaClient } = require("./src/ollama");
 const { recommendCard, buildCommanderDeck, validateCommanderDeck, roles, scoreCard, deckStats: calculateDeckStats } = require("./src/recommender");
 const { constraintsInput } = require("./src/constraints");
-const { copyLimit } = require("./src/deck-rules");
+const { copyLimit, mainDeckIssue, isBasic } = require("./src/deck-rules");
 const { exactCard, readWorkspace, directAction, modelContext, proposedConstraints, analyze, replacements, diffCards } = require("./src/workspace");
 const { HttpError, securityHeaders, checkOrigin, VisitorSessions, RateLimiter, ChatJobs } = require("./src/hosting");
 const { DemoAccess } = require("./src/demo-access");
@@ -68,7 +68,9 @@ function validateConstructedDeck(format, items) {
   const names = new Map();
   if (items.length < 60) errors.push(`${format} decks require at least 60 mainboard cards; found ${items.length}.`);
   for (const { card } of items) {
-    if (!/^Basic(?: Snow)? Land\b/i.test(card.type_line)) names.set(card.name, (names.get(card.name) || 0) + 1);
+    const issue = mainDeckIssue(card);
+    if (issue) errors.push(`${card.name}: ${issue}`);
+    if (!isBasic(card)) names.set(card.name, (names.get(card.name) || 0) + 1);
     if (card.legalities?.[format] !== "legal") errors.push(`${card.name} is not ${format} legal.`);
   }
   for (const [name, count] of names) {
@@ -76,7 +78,7 @@ function validateConstructedDeck(format, items) {
     const limit = copyLimit(card, false);
     if (count > limit) errors.push(`${name} exceeds its copy limit.`);
   }
-  return { ok: errors.length === 0, errors: [...new Set(errors)] };
+  return { ok: errors.length === 0, errors: [...new Set(errors)], rulesVersion: "2026-09-25", scope: "Main-deck eligibility, minimum size, copies and snapshot format legality; not a full card-text rules audit" };
 }
 
 async function validateDeckPayload(body, store) {
@@ -177,6 +179,9 @@ function createApp({ store, ollama, demo = null, production = process.env.NODE_E
     if (!resolution.card) return { kind: "clarification", resolution: { ...resolution, intent: parsed.intent }, message: body.message,
       format, maxPrice: body.maxPrice };
     const anchor = resolution.card;
+    if (["build_deck", "revise_constraints", "recommend_card"].includes(parsed.intent) && mainDeckIssue(anchor)) {
+      throw new HttpError(422, `${anchor.name}: ${mainDeckIssue(anchor)}`);
+    }
     stage("Building and checking synergy");
     const constraints = { ...proposedConstraints(parsed, body), format };
     const intent = parsed.intent;

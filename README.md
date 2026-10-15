@@ -131,6 +131,12 @@ The selected format, per-card price limit, total purchase budget, land count, se
 
 Commander generation fills exactly 100 cards including one commander or a compatible pair, honors selected land count, copy exceptions, color identity and snapshot legality, and enforces nonland draw, ramp and interaction minima. Curve targets influence selection; weighted mana demand informs basic land allocation. Mana source counts are not casting-probability calculations. Commander eligibility includes legendary Vehicles and Spacecraft with printed power/toughness and explicit card-text exceptions. Pair validation handles Partner, Partner with, Friends forever, Backgrounds and Doctor's companion.
 
+Generation, recommendations, locked cards and manual validation share main-deck eligibility checks. Attractions and Contraptions require separate supplementary decks and cannot occupy the main list. Dungeons, planes, phenomena, schemes, vanguards, conspiracies, sticker sheets, tokens, emblems, art-series objects and unsupported card types also cannot occupy its slots. Verified meld fronts remain eligible; combined meld backs do not. Owner-prepared Scryfall component metadata distinguishes those objects, including relations pointing to a different printing. Missing or conflicting meld metadata fails closed rather than guessing. Commander validation additionally checks basic land types against the commanders' color identity. Ordinary cards that mention Attractions or create tokens remain eligible.
+
+The UI reports that checked construction rules pass, not that the app implements every card-text exception or simulates a legal game. These checks follow [Wizards' September 25, 2026 Comprehensive Rules](https://media.wizards.com/2026/downloads/MagicCompRules%2020260925.txt), including 100.2, 108.2, 309.2, 315.3, 712.4, 717.2 and 903.5d. Supplementary-deck construction is not implemented, and these fixes do not silently create or substitute one. Existing saved lists that contain ineligible entries show validation errors when reopened; the app does not silently remove their cards.
+
+An invalid saved list can remain canonical diagnostic chat context, explicitly marked as failing construction checks. This lets visitors request a fresh build or a repair proposal instead of becoming trapped behind the invalid draft. The original list remains unchanged; every proposed output must pass construction and budget validation before the server returns it, and applying it still requires revision matching and fresh validation.
+
 Follow-ups receive canonical deck names, the selected card, a revision number and bounded recent conversation. Common workspace commands route explicitly; other phrasing uses a constrained Ollama action schema. The model cannot execute commands, choose tools or URLs, alter access controls, or silently override budgets. A budget or replacement request produces a quantity-aware proposal. Applying a proposal requires an unchanged revision and a fresh server validation. Model-selected evidence remains distinct from measured costs and deterministic validation; heuristic signals never become certified rules claims.
 
 The workspace groups and filters cards by type/role, sorts by price/mana/name/synergy, displays Oracle text and official rulings, and supports card locks, owned quantities, deck text import/export and twenty-step deck undo/redo. Mobile users switch between Chat, Deck and Card views. Saved lists refresh against the current catalog before use. Saving manual edits requires successful format and budget validation.
@@ -141,6 +147,7 @@ Owner-only setup imports official Scryfall Oracle data, functional tags, rulings
 
 ```powershell
 npm run data:enrich
+npm run data:deck-zones
 npm run data:combos
 ```
 

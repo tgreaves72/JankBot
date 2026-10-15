@@ -6,6 +6,7 @@ const { Readable } = require("node:stream");
 const { createGunzip } = require("node:zlib");
 const { createInterface } = require("node:readline");
 const { CardNames, normalizeName } = require("./card-names");
+const { mainDeckIssue, commanderInclusionErrors, meldComponent } = require("./deck-rules");
 
 const SCRYFALL_ROOT = "https://api.scryfall.com";
 const MIN_INTERVAL_MS = 125;
@@ -48,6 +49,7 @@ function compactCard(card) {
     uri: card.uri,
     scryfall_uri: card.scryfall_uri,
     layout: card.layout,
+    meld_component: card.layout === "meld" ? meldComponent(card) : null,
     mana_cost: card.mana_cost || card.card_faces?.map(face => face.mana_cost).filter(Boolean).join(" // ") || "",
     cmc: card.cmc || 0,
     type_line: card.type_line || "",
@@ -330,8 +332,10 @@ class CardStore {
     if (this.candidateCache.has(key)) return this.candidateCache.get(key);
     const allowedColors = new Set(colorIdentity);
     const cards = this.cards.filter(card => {
+      if (mainDeckIssue(card)) return false;
       if (format && card.legalities?.[format] !== "legal") return false;
       if (card.games?.length && !card.games.includes("paper")) return false;
+      if (format === "commander" && commanderInclusionErrors(card, allowedColors).length) return false;
       return (card.color_identity || []).every(color => allowedColors.has(color));
     });
     if (this.candidateCache.size >= 64) this.candidateCache.delete(this.candidateCache.keys().next().value);

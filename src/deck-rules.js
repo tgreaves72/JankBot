@@ -1,10 +1,56 @@
 const { normalizeName } = require("./card-names");
 
 const NUMBER_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, twelve: 12 };
+const BASIC_LAND_COLORS = [[/\bPlains\b/i, "W"], [/\bIsland\b/i, "U"], [/\bSwamp\b/i, "B"], [/\bMountain\b/i, "R"], [/\bForest\b/i, "G"]];
+const mainDeckIssues = new WeakMap();
 function frontType(card) { return card.card_faces?.[0]?.type_line || (card.type_line || "").split(" // ")[0]; }
 function isLand(card) { return /\bLand\b/i.test(frontType(card)); }
 function isBasic(card) { return /^Basic(?: Snow)? Land\b/i.test(frontType(card)); }
+function meldComponent(card) {
+  if (card.meld_component) return card.meld_component;
+  // Related-card IDs may refer to another printing of the same named component.
+  const components = new Set((card.all_parts || []).filter(part => part.id === card.id
+    || part.name === card.name && part.type_line === card.type_line).map(part => part.component)
+    .filter(component => ["meld_part", "meld_result"].includes(component)));
+  return components.size === 1 ? [...components][0] : null;
+}
+function mainDeckIssue(card) {
+  if (!mainDeckIssues.has(card)) mainDeckIssues.set(card, findMainDeckIssue(card));
+  return mainDeckIssues.get(card);
+}
+function findMainDeckIssue(card) {
+  const type = frontType(card);
+  const heading = type.split(/\s+(?:\u2014|\u2013|--|-)\s+/)[0];
+  if (/\bAttraction\b/i.test(type)) return "Attractions belong in a separate Attraction deck, not the main deck (CR 717.2).";
+  if (/\bContraption\b/i.test(type)) return "Contraptions belong in a separate Contraption deck, not the main deck.";
+  if (/\b(Dungeon|Plane|Phenomenon|Scheme|Vanguard|Conspiracy|Stickers?|Token|Emblem|Hero)\b/i.test(heading)
+      || ["token", "double_faced_token", "emblem", "art_series", "vanguard", "scheme", "planar", "dungeon"].includes(card.layout)) {
+    return "This is a non-main-deck card or game supplement; it cannot occupy a main-deck slot (CR 100.2, 108.2).";
+  }
+  if (card.layout === "meld") {
+    const component = meldComponent(card);
+    if (component === "meld_result") return "A melded back face is not a separate deck entry; include its front-face cards instead (CR 712.4).";
+    if (component !== "meld_part") return "Meld-component metadata is missing; the host must prepare the catalog before this card can be included.";
+  }
+  if (!/\b(Artifact|Battle|Creature|Enchantment|Instant|Land|Planeswalker|Sorcery)\b/i.test(heading)) {
+    return "This catalog object has no supported main-deck card type.";
+  }
+  return null;
+}
+function commanderInclusionErrors(card, allowedColors, commanderLabel) {
+  const errors = [], issue = mainDeckIssue(card), allowed = new Set(allowedColors);
+  if (issue) errors.push(`${card.name}: ${issue}`);
+  if ((card.color_identity || []).some(color => !allowed.has(color))) errors.push(`${card.name} is outside ${commanderLabel ? `${commanderLabel}'s` : "the commanders'"} color identity.`);
+  for (const face of card.card_faces?.length ? card.card_faces : [card]) {
+    const [types, subtypes = ""] = (face.type_line || "").split(/\s+(?:\u2014|\u2013|--|-)\s+/);
+    if (/\bLand\b/i.test(types) && BASIC_LAND_COLORS.some(([pattern, color]) => pattern.test(subtypes) && !allowed.has(color))) {
+      errors.push(`${card.name} has a basic land type outside the commanders' color identity (CR 903.5d).`);
+    }
+  }
+  return [...new Set(errors)];
+}
 function eligibleCommander(card) {
+  if (mainDeckIssue(card)) return false;
   const type = frontType(card);
   return /can be your commander/i.test(card.oracle_text || "") || /\bLegendary\b/i.test(type)
     && (/\bCreature\b/i.test(type) || /\b(Vehicle|Spacecraft)\b/i.test(type) && card.power != null && card.toughness != null);
@@ -45,9 +91,9 @@ function validateCommanderDeck(commanders, items) {
     const key = normalizeName(card.name);
     counts.set(key, (counts.get(key) || 0) + 1);
     if (card.legalities?.commander !== "legal") errors.push(`${card.name} is not Commander legal.`);
-    if ((card.color_identity || []).some(color => !allowed.has(color))) errors.push(`${card.name} is outside ${commanders.map(c => c.name).join(" / ")}'s color identity.`);
+    errors.push(...commanderInclusionErrors(card, allowed, commanders.map(commander => commander.name).join(" / ")));
     if (counts.get(key) > copyLimit(card)) errors.push(`${card.name} exceeds its copy limit.`);
   }
-  return { ok: errors.length === 0, errors: [...new Set(errors)], rulesVersion: "Commander 2026-10", scope: "Deck construction; not a game simulator or bracket certification" };
+  return { ok: errors.length === 0, errors: [...new Set(errors)], rulesVersion: "2026-09-25", scope: "Main-deck eligibility, commander eligibility/pairing, size, copies, color identity and basic land types; not a full card-text rules audit or bracket certification" };
 }
-module.exports = { frontType, isLand, isBasic, eligibleCommander, copyLimit, canPair, validateCommanderDeck };
+module.exports = { frontType, isLand, isBasic, meldComponent, mainDeckIssue, commanderInclusionErrors, eligibleCommander, copyLimit, canPair, validateCommanderDeck };

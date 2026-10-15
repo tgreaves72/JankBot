@@ -18,19 +18,19 @@ async function readWorkspace(input, store) {
   const anchor = await exactCard(store, input.commander);
   const selected = resolved.get(input.selectedName) || (input.selectedName === anchor.name ? anchor : await exactCard(store, input.selectedName));
   if (!selected) invalid("Selected card does not belong to this workspace.");
-  let commanders = [];
+  let commanders = [], validation = null;
   if (input.kind === "commander_deck") {
     const names = input.commanders || [anchor.name];
     if (!Array.isArray(names) || names.length < 1 || names.length > 2 || names[0] !== anchor.name) invalid("Invalid commander selection.");
     commanders = names.map(name => resolved.get(name));
     if (commanders.some(card => !card)) invalid("A workspace commander is missing.");
-    const validation = validateCommanderDeck(commanders, cards);
-    if (!validation.ok) invalid(validation.errors.join(" "), 422);
+    // Invalid canonical drafts remain usable context; proposed results must pass validation.
+    validation = validateCommanderDeck(commanders, cards);
     commanders.forEach(card => { const item = cards.find(item => item.card.name === card.name); item.roles = [...new Set([...item.roles, "commander"])]; });
   }
   const recent = input.recent || [];
   if (!Array.isArray(recent) || recent.length > 6 || recent.some(row => !row || !["user", "assistant"].includes(row.role) || typeof row.content !== "string" || row.content.length > 700)) invalid("Conversation context is too large or invalid.");
-  return { revision: input.revision, kind: input.kind, anchor, selected, cards, commanders, recent };
+  return { revision: input.revision, kind: input.kind, anchor, selected, cards, commanders, validation, recent };
 }
 function directAction(message, workspace) {
   if (!workspace) return null;
@@ -47,7 +47,9 @@ function directAction(message, workspace) {
 }
 function modelContext(workspace, message = "") {
   return workspace ? { commander: workspace.anchor.name, selectedCard: workspace.selected.name, deckVersion: workspace.revision,
-    deckCards: [...new Set([workspace.anchor.name, workspace.selected.name, ...workspace.cards.filter(item => normalizeName(message).includes(normalizeName(item.card.name))).map(item => item.card.name)])], recent: workspace.recent.slice(-3) } : { commander: null, selectedCard: null, deckCards: [], recent: [] };
+    deckCards: [...new Set([workspace.anchor.name, workspace.selected.name, ...workspace.cards.filter(item => normalizeName(message).includes(normalizeName(item.card.name))).map(item => item.card.name)])],
+    construction: workspace.validation ? { ok: workspace.validation.ok, errors: workspace.validation.errors.slice(0, 3) } : null,
+    recent: workspace.recent.slice(-3) } : { commander: null, selectedCard: null, deckCards: [], recent: [] };
 }
 function proposedConstraints(plan, body) {
   const next = { ...body.constraints };
@@ -68,7 +70,7 @@ async function analyze({ plan, workspace, store, message, constraints }) {
   }
   const stats = deckStats(workspace.cards, constraints);
   return { kind: "analysis", cards: cards.map(card => scoreCard(workspace.anchor, card, constraints) || { card, roles: roles(card), score: 1 }),
-    question: message, facts: { selected: workspace.selected.name, deckStats: { purchaseEstimatedUsd: stats.purchaseEstimatedUsd, roleCounts: stats.roleCounts, mana: stats.mana, budgetOk: stats.budget.ok },
+    question: message, facts: { selected: workspace.selected.name, construction: workspace.validation, deckStats: { purchaseEstimatedUsd: stats.purchaseEstimatedUsd, roleCounts: stats.roleCounts, mana: stats.mana, budgetOk: stats.budget.ok },
       evidenceScope: "Supplied Oracle text, tracked prices, functional tags and latest official rulings. Not a full rules simulation." } };
 }
 async function replacements({ plan, workspace, store, constraints, message }) {
