@@ -33,7 +33,6 @@ services:
     environment:
       NODE_ENV: production
       OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_MODEL: qwen2.5:0.5b
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the actual HTTPS public origin}
       DEMO_CONFIG: /app/config/demo-access.json
       DEMO_USAGE_PATH: /app/state/demo-usage.json

@@ -59,7 +59,7 @@ if ($Kind -eq "app") {
   $env:PORT = [string]$runtime.Port
   $env:PUBLIC_ORIGIN = $runtime.PublicOrigin
   $env:OLLAMA_BASE_URL = "http://127.0.0.1:11435"
-  $env:OLLAMA_MODEL = "qwen2.5:0.5b"
+  $env:OLLAMA_MODEL = $runtime.Model
   $env:DATA_DIR = Join-Path $Root "data"
   $env:DEMO_CONFIG = Join-Path $Root "config/demo-access.json"
   $env:DEMO_USAGE_PATH = Join-Path $Root "state/demo-usage.json"

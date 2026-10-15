@@ -17,6 +17,7 @@
     "test": "node --test",
     "evaluate": "node --max-old-space-size=512 scripts/evaluate.js",
     "evaluate:llm": "node scripts/evaluate-llm.js",
+    "benchmark:models": "node --max-old-space-size=512 scripts/benchmark-models.js",
     "data:enrich": "node scripts/enrich-data.js",
     "data:combos": "node scripts/enrich-combos.js",
     "data:deck-zones": "node scripts/enrich-deck-zones.js"

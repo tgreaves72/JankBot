@@ -89,7 +89,7 @@ function renderHealth(data) {
   state.metadata = data.cache;
   $("#cardCount").textContent = data.cache?.cardCount?.toLocaleString?.() || "not synced";
   $("#updatedAt").textContent = data.cache?.updatedAt ? new Date(data.cache.updatedAt).toLocaleString() : "not synced";
-  const requested = data.ollama?.requestedModel || data.ollamaModel || "qwen2.5:0.5b";
+  const requested = data.ollama?.requestedModel || data.ollamaModel || "Unavailable";
   $("#modelName").textContent = requested;
   if (!data.ollama?.reachable) {
     $("#ollamaStatus").textContent = "service offline";

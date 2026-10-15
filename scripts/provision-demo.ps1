@@ -3,6 +3,7 @@ param(
   [Parameter(Mandatory=$true)][string]$PublicOrigin
 )
 $ErrorActionPreference = "Stop"
+if ($PSVersionTable.PSVersion.Major -eq 5) { $env:PSModulePath = Join-Path $env:SystemRoot "System32/WindowsPowerShell/v1.0/Modules" }
 $principal = [System.Security.Principal.WindowsPrincipal]::new([System.Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "Run the employer demo provisioning command from an Administrator PowerShell. It creates a non-administrator service account." }
 if (-not $PublicOrigin.StartsWith("https://")) { throw "An HTTPS public origin is required." }
@@ -69,7 +70,7 @@ foreach ($directory in @("app", "app/src", "app/public", "app/scripts", "data", 
 Set-PrivateAcl (Join-Path $root "state") $true
 Set-PrivateAcl (Join-Path $root "logs") $true
 Set-PrivateAcl (Join-Path $root "models") $true
-foreach ($file in @("server.js", "package.json", "package-lock.json")) { Copy-Item -LiteralPath (Join-Path $project $file) -Destination (Join-Path $root "app/$file") -Force }
+foreach ($file in @("server.js", "package.json", "package-lock.json", "model-profile.json")) { Copy-Item -LiteralPath (Join-Path $project $file) -Destination (Join-Path $root "app/$file") -Force }
 $fuseDestination = Join-Path $root "app/node_modules/fuse.js/dist"
 New-Item -ItemType Directory -Path $fuseDestination -Force | Out-Null
 foreach ($file in @("package.json", "LICENSE")) { Copy-Item -LiteralPath (Join-Path $project "node_modules/fuse.js/$file") -Destination (Join-Path $root "app/node_modules/fuse.js/$file") -Force }
@@ -87,8 +88,13 @@ if ($LASTEXITCODE -ne 0) { throw "Read-only card snapshot creation failed." }
 Copy-Item -LiteralPath (Join-Path $project "data/metadata.json") -Destination (Join-Path $root "data/metadata.json") -Force
 Copy-Item -LiteralPath (Join-Path $project "data/combos.jsonl") -Destination (Join-Path $root "data/combos.jsonl") -Force
 $modelRoot = if ($env:OLLAMA_MODELS) { $env:OLLAMA_MODELS } else { Join-Path $env:USERPROFILE ".ollama/models" }
-$manifestRelative = "manifests/registry.ollama.ai/library/qwen2.5/0.5b"
-$manifest = Get-Content -LiteralPath (Join-Path $modelRoot $manifestRelative) -Raw | ConvertFrom-Json
+$profile = Get-Content -LiteralPath (Join-Path $project "model-profile.json") -Raw | ConvertFrom-Json
+if ($profile.model -cnotmatch '^[a-z0-9][a-z0-9.-]*:[a-zA-Z0-9_.-]+$' -or $profile.digest -cnotmatch '^[a-f0-9]{64}$' -or ($null -ne $profile.think -and $profile.think -cne $false)) { throw "Invalid pinned model profile." }
+$parts = $profile.model.Split(':')
+$manifestRelative = "manifests/registry.ollama.ai/library/$($parts[0])/$($parts[1])"
+$manifestPath = Join-Path $modelRoot $manifestRelative
+if ((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $profile.digest) { throw "Selected model manifest digest mismatch. Deployment stopped." }
+$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $destination = Join-Path $root "models/$manifestRelative"
 New-Item -ItemType Directory -Path (Split-Path -Parent $destination),(Join-Path $root "models/blobs") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $modelRoot $manifestRelative) -Destination $destination -Force
@@ -97,6 +103,7 @@ foreach ($layer in @($manifest.config) + @($manifest.layers)) {
   $blob = $layer.digest.Replace(':','-')
   $target = Join-Path $root "models/blobs/$blob"
   if (-not (Test-Path -LiteralPath $target)) { Copy-Item -LiteralPath (Join-Path $modelRoot "blobs/$blob") -Destination $target }
+  if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -cne $layer.digest.Substring(7)) { throw "Selected model blob digest mismatch. Deployment stopped." }
 }
 $node = (Get-Command node -ErrorAction Stop).Source
 $ollama = Join-Path $env:LOCALAPPDATA "Programs/Ollama/ollama.exe"
@@ -105,7 +112,7 @@ if (-not (Test-Path -LiteralPath $ollama)) { throw "Ollama executable not found.
 $ollamaDir = Split-Path -Parent $ollama
 & icacls $ollamaDir /grant "*$($account.SID.Value):(OI)(CI)RX" /T /Q | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Could not grant read access to the Ollama installation." }
-[pscustomobject]@{Port=$Port;PublicOrigin=$PublicOrigin;NodeExe=$node;OllamaExe=$ollama} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root "config/runtime.json")
+[pscustomobject]@{Port=$Port;PublicOrigin=$PublicOrigin;NodeExe=$node;OllamaExe=$ollama;Model=$profile.model} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root "config/runtime.json")
 & $node (Join-Path $PSScriptRoot "manage-demo.js") create $root $private
 if ($LASTEXITCODE -ne 0) { throw "Employer access provisioning failed." }
 & $node (Join-Path $PSScriptRoot "manage-demo.js") link $root $private "Resume and portfolio" $PublicOrigin

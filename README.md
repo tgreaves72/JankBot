@@ -54,6 +54,14 @@ The Node permission model and a standard Windows account are defense in depth, n
 
 The launcher and supervisors clear unrelated environment variables in their own processes, including API keys and Node preload options. This does not change your normal terminal's environment. The selected format and price cap remain authoritative; model output cannot override those controls.
 
+### Pinned Local Model
+
+`model-profile.json` defines exactly one model tag, its SHA-256 manifest digest, and its explicit thinking policy. The app, owner setup and native deployment share that profile. An environment override that disagrees with it stops startup. Inference checks the installed digest before every request; a missing or changed model fails rather than selecting an alternate. Thinking-capable deployments explicitly disable thinking to preserve the bounded structured-output workload. This does not disable card evidence, schema validation or server-side rules checks.
+
+Provisioning verifies the source manifest and every selected deployed blob against their SHA-256 digests. Public users cannot edit the profile, pull models, choose a model or trigger an alternate backend. A model upgrade requires an owner-reviewed profile change, benchmark and redeployment. Upstream tag changes require explicit review; `npm run setup -- --pull` does not accept a mismatched digest.
+
+See [the restricted model benchmark](docs/model-benchmark.md) for the protocol, measurements and limits of the comparison. Raw run reports remain owner-local under `.runtime/benchmarks/`; they do not contain invitation or host-control credentials.
+
 ## Resume and Portfolio Link
 
 The launcher creates a shared invitation labeled `Resume and portfolio` and writes the actual URL, website HTML, and Markdown into this owner-only file:

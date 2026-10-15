@@ -4,6 +4,7 @@ const fs = require("node:fs/promises");
 const { createReadStream } = require("node:fs");
 const { ScryfallClient, CardStore } = require("./src/scryfall");
 const { OllamaClient } = require("./src/ollama");
+const { loadProfile } = require("./src/model-profile");
 const { recommendCard, buildCommanderDeck, validateCommanderDeck, roles, scoreCard, deckStats: calculateDeckStats } = require("./src/recommender");
 const { constraintsInput } = require("./src/constraints");
 const { copyLimit, mainDeckIssue, isBasic } = require("./src/deck-rules");
@@ -145,9 +146,9 @@ async function serveStatic(req, res, pathname) {
 
 function createApp({ store, ollama, demo = null, production = process.env.NODE_ENV === "production", publicOrigin = process.env.PUBLIC_ORIGIN || "", sessionSecret = process.env.SESSION_SECRET } = {}) {
   const dataDir = path.resolve(process.env.DATA_DIR || path.join(__dirname, "data"));
-  const model = process.env.OLLAMA_MODEL || "qwen2.5:0.5b";
+  const profile = loadProfile(), model = profile.model;
   store ||= new CardStore({ dataDir, snapshotOnly: true, scryfall: new ScryfallClient({ appName: "JankBot/1.0", contact: process.env.SCRYFALL_CONTACT || "JankBot self-hosted" }) });
-  ollama ||= new OllamaClient({ baseUrl: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434", model, demo: Boolean(demo) });
+  ollama ||= new OllamaClient({ baseUrl: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434", ...profile, demo: Boolean(demo) });
   if (publicOrigin) publicOrigin = new URL(publicOrigin).origin;
   const sessions = new VisitorSessions({ secret: sessionSecret, secure: publicOrigin.startsWith("https://") });
   const limits = new RateLimiter();
