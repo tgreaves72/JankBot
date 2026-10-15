@@ -1,4 +1,5 @@
 const { randomUUID, randomBytes, createHmac, timingSafeEqual } = require("node:crypto");
+const { EventEmitter } = require("node:events");
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -83,6 +84,8 @@ class ChatJobs {
     this.jobs = new Map();
     this.queue = [];
     this.running = false;
+    this.events = new EventEmitter();
+    this.events.setMaxListeners(64);
   }
 
   prune() {
@@ -107,10 +110,33 @@ class ChatJobs {
   submit(owner, run) {
     this.assertAvailable(owner);
     const job = { id: randomUUID(), owner, status: "queued", stage: "Waiting for the model", createdAt: Date.now() };
+    Object.defineProperty(job, "controller", { value: new AbortController() });
     this.jobs.set(job.id, job);
     this.queue.push({ job, run });
     void this.drain();
     return job.id;
+  }
+
+  watch(id, owner, listener) {
+    const job = this.get(id, owner);
+    if (this.events.listenerCount(id) >= 2) throw new HttpError(429, "This request already has two progress connections.");
+    this.events.on(id, listener);
+    listener(job);
+    return () => this.events.off(id, listener);
+  }
+
+  notify(job) { this.events.emit(job.id, this.get(job.id, job.owner)); }
+
+  cancel(id, owner) {
+    const view = this.get(id, owner), job = this.jobs.get(id);
+    if (job.finishedAt) return view;
+    job.controller.abort();
+    if (job.status === "queued") {
+      this.queue = this.queue.filter(entry => entry.job.id !== id);
+      job.status = "canceled"; job.stage = "Canceled"; job.finishedAt = Date.now();
+      this.notify(job);
+    }
+    return this.get(id, owner);
   }
 
   get(id, owner) {
@@ -129,18 +155,29 @@ class ChatJobs {
       while (this.queue.length) {
         const { job, run } = this.queue.shift();
         job.status = "running";
+        job.stageTimings = {};
+        let previousStage = job.stage, previousTime = performance.now();
         try {
-          job.result = await run(stage => { job.stage = stage; });
+          job.result = await run(stage => {
+            if (job.controller.signal.aborted) throw new HttpError(499, "Request canceled.");
+            const now = performance.now(); job.stageTimings[previousStage] = Math.round(now - previousTime);
+            job.stage = stage; previousStage = stage; previousTime = now; this.notify(job);
+          }, job.controller.signal);
+          if (job.controller.signal.aborted) throw new HttpError(499, "Request canceled.");
+          job.stageTimings[previousStage] = Math.round(performance.now() - previousTime);
+          if (job.result && typeof job.result === "object") job.result.timing = { ...job.result.timing, stages: { ...job.stageTimings } };
           job.status = "complete";
           job.stage = "Complete";
         } catch (error) {
-          job.status = "failed";
+          job.status = job.controller.signal.aborted ? "canceled" : "failed";
+          delete job.result;
           job.error = { status: error.status || 503, message: error.status ? error.message
             : error.name === "OllamaError" ? "The AI request could not be completed. No result was saved. Try again shortly."
             : "A required service failed. The host can inspect its logs for details." };
           console.error(JSON.stringify({ event: "chat_failed", jobId: job.id, error: error.message }));
         } finally {
           job.finishedAt = Date.now();
+          this.notify(job);
         }
       }
     } finally {

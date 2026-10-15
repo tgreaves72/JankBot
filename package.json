@@ -14,7 +14,11 @@
     "demo:revoke": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invitation.ps1 -Revoke",
     "demo:link": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invitation.ps1 -Link",
     "demo:rotate-link": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invitation.ps1 -RotateLink",
-    "test": "node --test"
+    "test": "node --test",
+    "evaluate": "node --max-old-space-size=512 scripts/evaluate.js",
+    "evaluate:llm": "node scripts/evaluate-llm.js",
+    "data:enrich": "node scripts/enrich-data.js",
+    "data:combos": "node scripts/enrich-combos.js"
   },
   "keywords": [
     "magic",
@@ -32,6 +36,7 @@
     "fuse.js": "7.1.0"
   },
   "devDependencies": {
-    "lucide-static": "0.468.0"
+    "lucide-static": "0.468.0",
+    "stream-json": "3.7.0"
   }
 }

@@ -1,5 +1,9 @@
 Magic: The Gathering card names, images and artwork are copyright Wizards of the Coast and their respective artists. JankBot is an unofficial fan project, not affiliated with Wizards of the Coast. Card data and imagery provided by Scryfall.
 
+Oracle text, card legality, printing prices, functional tags and official rulings: Scryfall bulk data, https://scryfall.com/docs/api/bulk-data
+Published combo records: Commander Spellbook, https://commanderspellbook.com/ and https://spacecowmedia.github.io/commander-spellbook-backend/api.html
+Combo matching checks card quantities and required commanders. Review each record's zones, board state and prerequisites; matching cards alone does not demonstrate a playable combo.
+
 Command Tower - illustration by Josu Solano. https://scryfall.com/card/frc/22/command-tower?utm_source=api
 Teysa Karlov - illustration by Magali Villeneuve. https://scryfall.com/card/cmm/359/teysa-karlov?utm_source=api
 Yarok, the Desecrated - illustration by Daarken. https://scryfall.com/card/ecc/136/yarok-the-desecrated?utm_source=api

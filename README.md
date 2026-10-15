@@ -103,7 +103,7 @@ The Tailscale device is named `jankbot`, so its public address begins with `http
 
 ## Maintenance
 
-Public requests cannot pull models, refresh caches, write card data, choose backend URLs, execute commands, upload files, or access arbitrary files. The server serves a fixed asset allowlist and rejects linked assets and traversal paths. Cookies use HttpOnly, Secure, and SameSite=Strict; mutations require the configured origin. Body sizes, URL lengths, API rates, sockets, and request duration are bounded. Forwarding headers cannot create a trusted visitor identity.
+Public requests cannot pull models, refresh caches, write card data, choose backend URLs, execute commands, upload arbitrary files, or access arbitrary host files. Deck text import reads a bounded local text file in the browser and submits only parsed card names for validation. The server serves a fixed asset allowlist and rejects linked assets and traversal paths. Cookies use HttpOnly, Secure, and SameSite=Strict; mutations require the configured origin. Body sizes, URL lengths, API rates, sockets, and request duration are bounded. Forwarding headers cannot create a trusted visitor identity.
 
 The demo uses an explicit read-only Scryfall snapshot, with its date visible in the UI. Unknown cards return an error rather than triggering an unrestricted network lookup. Snapshots older than seven days fail readiness. Refresh and redeploy from the owner account:
 
@@ -121,9 +121,30 @@ Card-name resolution uses the local Scryfall catalog and pinned Fuse.js fuzzy se
 
 Standard deck/card request templates use a dedicated command parser that preserves misspellings; more complex messages still use Ollama intent extraction. Recognized ambiguous requests return choices before entering the inference queue or consuming its allowance. Confirming a choice validates its exact catalog name and still requires Ollama for the explanation. Failed inference never becomes a fallback answer. Formats, price controls, authentication, resource caps, and persisted quotas remain authoritative.
 
-Explanation generation uses an Ollama JSON schema with bounded strings, exactly two short synergy points, and card-name enums drawn only from the supplied prompt data. The server independently validates those constraints and fails malformed output rather than truncating it or substituting another answer. Card budgets validate in the browser and on the server; failed requests retain the original message for correction or retry.
+Explanation generation uses an evidence-selection contract. Ollama chooses a relevant answer, two distinct supporting points and a budget statement from dynamically supplied enums containing exact Oracle excerpts, explicitly labeled heuristic signals and measured deck facts. It does not freely rewrite rules text. This deliberately trades conversational prose for verifiable wording after live testing found unsupported ability claims from the small model. The server independently validates all choices and fails unsupported output rather than truncating it or substituting another answer. No model failure bypasses this contract. Card budgets validate in the browser and on the server; failed requests retain the original message for correction or retry.
 
-Performance improvements include bounded name-query and candidate-pool caches, immutable card-feature memoization, a single inference stage for recognized requests, fewer duplicate prompt tokens, ten-minute model retention, lazy deck thumbnails, in-place card selection, cancellation of stale autocomplete searches, and 800 ms job polling. The UI displays elapsed request time. Cache contents disappear or invalidate when the underlying catalog is replaced; they do not substitute for expired data.
+Performance improvements include bounded name-query and candidate-pool caches, immutable card-feature memoization, a single inference stage for recognized requests, compact evidence prompts, ten-minute model retention, lazy deck thumbnails, in-place card selection, and cancellation of stale autocomplete searches. Authenticated server-sent events deliver real job stages rather than simulated progress or repeated polling. Visitors can cancel queued or running requests; canceled results never become saved results. The response includes stage timings and Ollama token/duration measurements. Cache contents disappear or invalidate when the underlying catalog is replaced; they do not substitute for expired data.
+
+## Deck Workspace
+
+The selected format, per-card price limit, total purchase budget, land count, second commander, ownership quantities and locked cards travel with each deck revision. Known prices use integer cents. Owned copies reduce the purchase estimate, not the full deck estimate. Unpriced purchases fail budget checks rather than silently costing zero. Prices cover the lowest tracked available English paper nonfoil USD printing, with its printing identifier and update date retained; estimates exclude shipping, tax and retailer inventory guarantees.
+
+Commander generation fills exactly 100 cards including one commander or a compatible pair, honors selected land count, copy exceptions, color identity and snapshot legality, and enforces nonland draw, ramp and interaction minima. Curve targets influence selection; weighted mana demand informs basic land allocation. Mana source counts are not casting-probability calculations. Commander eligibility includes legendary Vehicles and Spacecraft with printed power/toughness and explicit card-text exceptions. Pair validation handles Partner, Partner with, Friends forever, Backgrounds and Doctor's companion.
+
+Follow-ups receive canonical deck names, the selected card, a revision number and bounded recent conversation. Common workspace commands route explicitly; other phrasing uses a constrained Ollama action schema. The model cannot execute commands, choose tools or URLs, alter access controls, or silently override budgets. A budget or replacement request produces a quantity-aware proposal. Applying a proposal requires an unchanged revision and a fresh server validation. Model-selected evidence remains distinct from measured costs and deterministic validation; heuristic signals never become certified rules claims.
+
+The workspace groups and filters cards by type/role, sorts by price/mana/name/synergy, displays Oracle text and official rulings, and supports card locks, owned quantities, deck text import/export and twenty-step deck undo/redo. Mobile users switch between Chat, Deck and Card views. Saved lists refresh against the current catalog before use. Saving manual edits requires successful format and budget validation.
+
+## Evidence Preparation
+
+Owner-only setup imports official Scryfall Oracle data, functional tags, rulings and English paper printing prices. It also prepares a streamed Commander Spellbook snapshot containing concrete published variants; template-dependent variants are excluded explicitly. Public requests read only prepared snapshots. To refresh evidence individually:
+
+```powershell
+npm run data:enrich
+npm run data:combos
+```
+
+Combo matching checks card quantities and required commanders. The interface retains published prerequisites, zones, board state and source links for inspection. It does not claim that merely holding the matching cards executes a combo. Synergy features and role classification remain heuristic. Official data sources: [Scryfall bulk data](https://scryfall.com/docs/api/bulk-data) and [Commander Spellbook API](https://spacecowmedia.github.io/commander-spellbook-backend/api.html).
 
 The interface uses original Scryfall card scans and Command Tower artwork, attributed in `public/credits.txt`, plus pinned Lucide icons. It uses local serif/system fonts, a light drafting surface, a responsive spellbook drawer, and a compact card inspector. No external UI CDN or generated imitation card artwork is required. This is an unofficial fan project, not affiliated with Wizards of the Coast.
 
@@ -145,11 +166,17 @@ Public requests cannot run that preparation script. Native deployment copies onl
 
 ```powershell
 npm test
+npm run evaluate
+npm run evaluate:llm -- --limit=3
 ```
 
 Tests cover fragment removal before token exchange, no token storage, one-click authentication, invalid/expired/revoked links, shared session bounds, session reuse, rotation with preserved quotas, forged cookies, session ownership, login limits, persistent and concurrent quotas, failed storage, unauthenticated API denial, origin checks, request limits, static traversal, snapshot-only lookups, and Node file/subprocess permissions. Host deployment performs a separate real Windows-account access check.
 
-Deck generation supports Commander. Other listed formats support card recommendations and deck validation. Synergy scoring remains heuristic, not proof of globally optimal decks or cheapest prices across all printings. The application does not implement a complete MTG rules simulator.
+The deck evaluator uses the actual prepared catalog and a 512 MiB JavaScript heap. The optional LLM evaluator contains 100 intent cases and reports actual success counts and median/p95 durations for the requested subset. It uses only installed models, never automatically pulls an alternate model, and does not measure explanation truth or strategic play quality. A corpus containing 100 cases does not mean all 100 ran. Intent accuracy and deck legality do not establish strategic quality; review explanations and combo prerequisites independently.
+
+An October 14, 2026 host check passed 71 automated tests. Two real catalog builds produced legal 100-card, 37-land lists within the selected $75 budget. A real protected follow-up produced a $29.72 proposal under a $30 purchase limit. The installed 0.5B model classified two of three raw intent test prompts correctly; the explicit request grammar handles the standard card/deck templates separately. Complex phrasing remains a known limitation, not a solved accuracy claim. A separate real-model evidence-selection check returned exact Oracle quotations without the unsupported ability paraphrase observed during development. After the owner opened the public page, browser verification passed at desktop and mobile sizes: invitation sign-in, real $32.25 deck generation under a $40 limit, selected-card costs, deck filtering, mobile navigation and rejection of a 99-card edit. The checked mobile deck view had no horizontal overflow, and the browser reported no application warnings or errors during that pass.
+
+Deck generation supports Commander. Other listed formats support card recommendations and deck validation. Synergy scoring remains heuristic, not proof of globally optimal decks or the cheapest purchasable deck. The application does not implement a complete MTG rules simulator or certify Commander brackets.
 
 The optional Docker configuration has resource and privilege restrictions and requires an explicit HTTPS origin and employer configuration mount. Docker is not installed or verified on this host; the native Windows deployment above is the tested hosting route. Container setup must prepare `oracle-cards.compact.jsonl` using `scripts/prepare-snapshot.js` in its data volume before starting the public app.
 

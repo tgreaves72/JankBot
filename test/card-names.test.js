@@ -127,10 +127,13 @@ test("card budgets accept 40 and boundary values, and reject invalid values befo
     assert.equal((await post({ message, maxPrice })).status, 400);
   }
   assert.deepEqual(counts(), { parses: 0, explanations: 0 });
-  for (const maxPrice of [0.25, 2.37, 40, 50]) {
+  for (const maxPrice of [2.37, 40, 50]) {
     const job = await result(await post({ message, maxPrice }));
     assert.equal(job.status, "complete");
   }
+  const low = await result(await post({ message, maxPrice: 0.25 }));
+  assert.equal(low.status, "failed");
+  assert.equal(low.error.status, 422);
 });
 
 test("model failure never becomes a deterministic fallback answer", async t => {

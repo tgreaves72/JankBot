@@ -164,8 +164,8 @@ test("model output cannot override the selected format or price setting", async 
   const { jobId } = await accepted.json();
   await new Promise(resolve => setImmediate(resolve));
   const job = await (await fetch(`${url}/api/jobs/${jobId}`, { headers: { Cookie: cookie } })).json();
-  assert.equal(job.status, "complete");
-  assert.equal(job.result.format, "modern");
-  assert.deepEqual(formats, ["modern"]);
-  assert.ok(Math.abs(job.result.result.recommendation.priceScore - 0.775) < 0.0001);
+  assert.equal(job.status, "failed");
+  assert.equal(job.error.status, 422);
+  assert.match(job.error.message, /not explicitly present/);
+  assert.deepEqual(formats, []);
 });

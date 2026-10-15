@@ -85,6 +85,7 @@ $node = (Get-Command node -ErrorAction Stop).Source
 & $node (Join-Path $PSScriptRoot "prepare-snapshot.js") (Join-Path $project "data/oracle-cards.compact.json") (Join-Path $root "data/oracle-cards.compact.jsonl")
 if ($LASTEXITCODE -ne 0) { throw "Read-only card snapshot creation failed." }
 Copy-Item -LiteralPath (Join-Path $project "data/metadata.json") -Destination (Join-Path $root "data/metadata.json") -Force
+Copy-Item -LiteralPath (Join-Path $project "data/combos.jsonl") -Destination (Join-Path $root "data/combos.jsonl") -Force
 $modelRoot = if ($env:OLLAMA_MODELS) { $env:OLLAMA_MODELS } else { Join-Path $env:USERPROFILE ".ollama/models" }
 $manifestRelative = "manifests/registry.ollama.ai/library/qwen2.5/0.5b"
 $manifest = Get-Content -LiteralPath (Join-Path $modelRoot $manifestRelative) -Raw | ConvertFrom-Json

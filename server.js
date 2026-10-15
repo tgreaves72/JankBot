@@ -4,7 +4,10 @@ const fs = require("node:fs/promises");
 const { createReadStream } = require("node:fs");
 const { ScryfallClient, CardStore } = require("./src/scryfall");
 const { OllamaClient } = require("./src/ollama");
-const { recommendCard, buildCommanderDeck, validateCommanderDeck, roles } = require("./src/recommender");
+const { recommendCard, buildCommanderDeck, validateCommanderDeck, roles, scoreCard, deckStats: calculateDeckStats } = require("./src/recommender");
+const { constraintsInput } = require("./src/constraints");
+const { copyLimit } = require("./src/deck-rules");
+const { exactCard, readWorkspace, directAction, modelContext, proposedConstraints, analyze, replacements, diffCards } = require("./src/workspace");
 const { HttpError, securityHeaders, checkOrigin, VisitorSessions, RateLimiter, ChatJobs } = require("./src/hosting");
 const { DemoAccess } = require("./src/demo-access");
 const { directRequest, normalizeName } = require("./src/card-names");
@@ -58,22 +61,7 @@ function formatInput(value = "commander") {
   return value;
 }
 
-function deckStats(items) {
-  const curve = {};
-  const roleCounts = {};
-  let total = 0;
-  let unpricedCards = 0;
-  for (const item of items) {
-    if (item.card.cheapest_usd == null) unpricedCards++;
-    else total += Number(item.card.cheapest_usd);
-    if (!item.roles.includes("land") && !item.roles.includes("commander")) {
-      const key = String(Math.min(7, Math.floor(item.card.cmc || 0)));
-      curve[key] = (curve[key] || 0) + 1;
-    }
-    for (const role of item.roles) roleCounts[role] = (roleCounts[role] || 0) + 1;
-  }
-  return { totalEstimatedUsd: Number(total.toFixed(2)), unpricedCards, curve, roleCounts };
-}
+function deckStats(items, constraints) { return calculateDeckStats(items, constraints); }
 
 function validateConstructedDeck(format, items) {
   const errors = [];
@@ -85,11 +73,8 @@ function validateConstructedDeck(format, items) {
   }
   for (const [name, count] of names) {
     const card = items.find(item => item.card.name === name).card;
-    if (/a deck can have any number of cards named/i.test(card.oracle_text)) continue;
-    const specialLimit = card.oracle_text.match(/a deck can have up to (\w+) cards named/i);
-    const words = { seven: 7, nine: 9 };
-    const limit = specialLimit ? (words[specialLimit[1]] || Number(specialLimit[1])) : 4;
-    if (!Number.isFinite(limit) || count > limit) errors.push(`${name} exceeds its copy limit.`);
+    const limit = copyLimit(card, false);
+    if (count > limit) errors.push(`${name} exceeds its copy limit.`);
   }
   return { ok: errors.length === 0, errors: [...new Set(errors)] };
 }
@@ -109,17 +94,32 @@ async function validateDeckPayload(body, store) {
   }
   const items = names.map(name => ({ card: resolved.get(name), roles: roles(resolved.get(name)), score: 0, reasons: ["manual deck edit"] }));
   let commander = null;
+  let commanders = [];
   let validation;
   if (format === "commander") {
     const commanderName = textInput(body.commander, "Commander");
     commander = resolved.get(commanderName);
     if (!commander) throw new HttpError(422, "Include the commander in the deck.");
-    validation = validateCommanderDeck(commander, items);
+    const commanderNames = body.commanders || [commanderName];
+    if (!Array.isArray(commanderNames) || commanderNames.length < 1 || commanderNames.length > 2 || commanderNames[0] !== commanderName) throw new HttpError(400, "Select one commander or a legal pair.");
+    commanders = commanderNames.map(name => resolved.get(textInput(name, "Commander")));
+    if (commanders.some(card => !card)) throw new HttpError(422, "Include both commanders in the deck.");
+    validation = validateCommanderDeck(commanders, items);
     if (names[0] !== commanderName) validation.errors.push("The commander must occupy the commander slot.");
     validation.ok = validation.errors.length === 0;
-    items[0].roles = [...new Set([...items[0].roles, "commander"])];
+    commanders.forEach((card, index) => { if (items[index]?.card.name !== card.name) validation.errors.push("Commanders must occupy the first commander slots."); else items[index].roles = [...new Set([...items[index].roles, "commander"])]; });
   } else validation = validateConstructedDeck(format, items);
-  return { format, commander, cards: items, validation, ...deckStats(items) };
+  if (commander) for (const item of items) {
+    if (commanders.some(card => card.name === item.card.name)) continue;
+    Object.assign(item, scoreCard(commander, item.card, body.constraints || {}));
+  }
+  const constraints = constraintsInput(body.constraints || {});
+  if (format === "commander") constraints.partner = commanders[1]?.name || null;
+  const stats = deckStats(items, constraints);
+  validation.errors.push(...stats.budget.errors); validation.errors = [...new Set(validation.errors)]; validation.ok = !validation.errors.length;
+  const comboAnalysis = format === "commander" && validation.ok && store.combosFor
+    ? await store.combosFor(items, commanders) : { status: validation.ok ? "not_prepared" : "not_checked_invalid_deck", matches: [], matchedCount: 0 };
+  return { kind: format === "commander" ? "commander_deck" : "constructed_deck", format, commander, commanders, cards: items, mainboard: items.slice(commanders.length), validation, constraints, ...stats, comboAnalysis, combos: comboAnalysis.matches };
 }
 
 async function serveStatic(req, res, pathname) {
@@ -127,9 +127,9 @@ async function serveStatic(req, res, pathname) {
   const target = path.resolve(PUBLIC_DIR, `.${pathname === "/" ? "/index.html" : pathname}`);
   const relative = path.relative(PUBLIC_DIR, target);
   if (relative.startsWith("..") || path.isAbsolute(relative) || relative.includes(":")) throw new HttpError(403, "Forbidden.");
-  const allowed = new Set(["index.html", "styles.css", "app.js", "storage.js", "access.js", "credits.txt",
+  const allowed = new Set(["index.html", "styles.css", "app.js", "storage.js", "access.js", "deck-io.js", "credits.txt",
     "art-command-tower.jpg", "card-teysa.jpg", "card-yarok.jpg", "card-niv.jpg",
-    ...["send", "log-out", "download", "pencil-line", "plus", "x", "trash-2", "check", "layers", "book-open"].map(name => `icon-${name}.svg`)]);
+    ...["send", "log-out", "download", "pencil-line", "plus", "x", "trash-2", "check", "layers", "book-open", "undo-2", "redo-2", "upload"].map(name => `icon-${name}.svg`)]);
   if (!allowed.has(relative)) throw new HttpError(404, "Not found.");
   let stat;
   try { stat = await fs.stat(target); } catch { throw new HttpError(404, "Not found."); }
@@ -144,18 +144,25 @@ async function serveStatic(req, res, pathname) {
 function createApp({ store, ollama, demo = null, production = process.env.NODE_ENV === "production", publicOrigin = process.env.PUBLIC_ORIGIN || "", sessionSecret = process.env.SESSION_SECRET } = {}) {
   const dataDir = path.resolve(process.env.DATA_DIR || path.join(__dirname, "data"));
   const model = process.env.OLLAMA_MODEL || "qwen2.5:0.5b";
-  store ||= new CardStore({ dataDir, snapshotOnly: Boolean(demo), scryfall: new ScryfallClient({ appName: "JankBot/1.0", contact: process.env.SCRYFALL_CONTACT || "JankBot self-hosted" }) });
+  store ||= new CardStore({ dataDir, snapshotOnly: true, scryfall: new ScryfallClient({ appName: "JankBot/1.0", contact: process.env.SCRYFALL_CONTACT || "JankBot self-hosted" }) });
   ollama ||= new OllamaClient({ baseUrl: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434", model, demo: Boolean(demo) });
   if (publicOrigin) publicOrigin = new URL(publicOrigin).origin;
   const sessions = new VisitorSessions({ secret: sessionSecret, secure: publicOrigin.startsWith("https://") });
   const limits = new RateLimiter();
   const jobs = new ChatJobs({ maxPending: demo ? 3 : 8, maxRetained: demo ? 12 : 32 });
 
-  async function generateChat(body, stage, prepared = {}) {
+  async function generateChat(body, stage, prepared = {}, signal) {
     const started = performance.now();
     stage("Reading your request");
-    const parsed = prepared.parsed || await ollama.parseIntent(body.message);
-    if (parsed.source !== "selection" && !normalizeName(body.message).includes(normalizeName(parsed.cardName))) {
+    const workspace = prepared.workspace;
+    const parsed = { ...(prepared.parsed || directAction(body.message, workspace) || await ollama.parseIntent(body.message, modelContext(workspace, body.message), signal)) };
+    if (workspace?.commanders.length && parsed.intent === "build_deck" && (!parsed.cardName || !normalizeName(body.message).includes(normalizeName(parsed.cardName)))) {
+      parsed.intent = "revise_constraints"; parsed.cardName = workspace.anchor.name;
+    }
+    const contextual = ["explain_choice", "compare_cards", "propose_replacements", "revise_constraints"].includes(parsed.intent);
+    if (parsed.intent === "clarify") return { kind: "question", message: parsed.question || "Which card or deck change should I work on?" };
+    if (parsed.source !== "selection" && parsed.cardName && !normalizeName(body.message).includes(normalizeName(parsed.cardName))
+        && !workspace?.cards.some(item => item.card.name === parsed.cardName) && workspace?.anchor.name !== parsed.cardName) {
       throw new HttpError(422, "I could not reliably identify the card name. Try enclosing the name in quotes.");
     }
     const format = body.format;
@@ -164,19 +171,38 @@ function createApp({ store, ollama, demo = null, production = process.env.NODE_E
     }
     stage("Searching cards");
     await store.ensureReady();
-    const resolution = prepared.resolution || await store.inferCard(parsed.cardName);
+    const resolution = workspace && (contextual || !parsed.cardName) ? { status: "context", card: workspace.anchor, query: workspace.anchor.name }
+      : prepared.resolution || (parsed.cardName ? await store.inferCard(parsed.cardName) : null);
+    if (!resolution) throw new HttpError(422, "Name a card or load a deck to continue.");
     if (!resolution.card) return { kind: "clarification", resolution: { ...resolution, intent: parsed.intent }, message: body.message,
       format, maxPrice: body.maxPrice };
     const anchor = resolution.card;
     stage("Building and checking synergy");
-    const constraints = { format, budget: "budget", maxPrice: body.maxPrice };
+    const constraints = { ...proposedConstraints(parsed, body), format };
     const intent = parsed.intent;
-    const result = intent === "recommend_card" ? await recommendCard({ anchor, store, constraints }) : await buildCommanderDeck({ commander: anchor, store, constraints });
+    let result;
+    if (["explain_choice", "compare_cards"].includes(intent)) {
+      for (const name of [parsed.cardName, parsed.compareCardName].filter(Boolean)) if (!normalizeName(body.message).includes(normalizeName(name)) && !workspace?.cards.some(item => item.card.name === name)) throw new HttpError(422, "Name the cards you want to analyze, or select a card in the deck.");
+      result = await analyze({ plan: parsed, workspace, store, message: body.message, constraints });
+    } else if (intent === "propose_replacements") result = await replacements({ plan: parsed, workspace, store, message: body.message, constraints });
+    else if (intent === "recommend_card") result = await recommendCard({ anchor, store, constraints });
+    else if (["build_deck", "revise_constraints"].includes(intent)) {
+      if (intent === "revise_constraints" && !workspace?.commanders.length) throw new HttpError(422, "Load a legal Commander deck before revising it.");
+      result = await buildCommanderDeck({ commander: anchor, store, constraints });
+    } else throw new HttpError(422, "Unsupported workspace action.");
     if (intent === "recommend_card" && !result.recommendation) throw new HttpError(422, "No legal matching cards found.");
     if (result.validation && !result.validation.ok) throw new HttpError(422, result.validation.errors.join(" "));
+    if (result.kind === "commander_deck" && store.combosFor) {
+      stage("Checking published combo prerequisites");
+      result.comboAnalysis = await store.combosFor(result.cards, result.commanders);
+      result.combos = result.comboAnalysis.matches;
+    }
     stage("Preparing your recommendation");
-    const response = await ollama.explain({ message: body.message, anchor, result, intent });
-    return { intent, format, anchor, result, response, resolution: { status: resolution.status, query: resolution.query, name: anchor.name },
+    const proposal = ["propose_replacements", "revise_constraints"].includes(intent);
+    if (proposal) result.changes = diffCards(workspace.cards, result.cards);
+    const response = await ollama.explain({ message: body.message, anchor, result, intent: intent === "recommend_card" ? intent : "build_deck", signal });
+    return { kind: proposal ? "proposal" : result.kind === "analysis" ? "analysis" : "result", baseRevision: workspace?.revision,
+      constraints, intent, format, anchor, result, response, resolution: { status: resolution.status, query: resolution.query, name: anchor.name },
       timing: { parser: parsed.source || "ollama", totalMs: Math.round(performance.now() - started) }, dataFreshness: await store.metadata(), model: { name: model, used: true } };
   }
 
@@ -208,7 +234,7 @@ function createApp({ store, ollama, demo = null, production = process.env.NODE_E
     limits.check(`${owner}:${polling ? "poll" : "api"}`, { limit: polling ? 300 : 120 });
     if (url.pathname === "/api/health" && req.method === "GET") {
       const status = await ollama.status();
-      return sendJson(res, 200, { ok: true, ollamaModel: model, ollama: { reachable: status.reachable, requestedModel: model, modelAvailable: status.modelAvailable }, cache: await store.metadata(), capabilities: { maintenance: !production, asyncChat: true, employerDemo: Boolean(demo), oneClickDemo: Boolean(demo?.config.invites.some(invite => invite.kind === "link" && demo.invite(invite.id))) }, deployment: { publicOrigin, accessRequired: Boolean(demo) } });
+      return sendJson(res, 200, { ok: true, ollamaModel: model, ollama: { reachable: status.reachable, requestedModel: model, modelAvailable: status.modelAvailable }, cache: await store.metadata(), capabilities: { maintenance: !production && !store.snapshotOnly, asyncChat: true, employerDemo: Boolean(demo), oneClickDemo: Boolean(demo?.config.invites.some(invite => invite.kind === "link" && demo.invite(invite.id))) }, deployment: { publicOrigin, accessRequired: Boolean(demo) } });
     }
     if (url.pathname === "/api/ready" && req.method === "GET") {
       const status = await ollama.status();
@@ -217,16 +243,38 @@ function createApp({ store, ollama, demo = null, production = process.env.NODE_E
       const ready = status.reachable && status.modelAvailable && metadata.loaded && (!demo || (store.loaded && snapshotFresh));
       return sendJson(res, ready ? 200 : 503, { ready });
     }
+    if (polling && url.pathname.endsWith("/cancel") && req.method === "POST") {
+      await readBody(req, 1024);
+      return sendJson(res, 200, jobs.cancel(url.pathname.split("/")[3], owner));
+    }
+    if (polling && url.pathname.endsWith("/events") && req.method === "GET") {
+      const id = url.pathname.split("/")[3];
+      jobs.get(id, owner);
+      if (jobs.events.listenerCount(id) >= 2) throw new HttpError(429, "This request already has two progress connections.");
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+      const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 10_000);
+      const timeout = setTimeout(() => res.end(), 15 * 60_000);
+      let unwatch;
+      const stop = () => { clearInterval(heartbeat); clearTimeout(timeout); unwatch?.(); };
+      req.on("aborted", stop); res.on("close", stop);
+      unwatch = jobs.watch(id, owner, job => { if (!res.writableEnded && !res.destroyed) {
+        res.write(`data: ${JSON.stringify(job)}\n\n`);
+        if (["complete", "failed", "canceled"].includes(job.status)) { res.end(); queueMicrotask(stop); }
+      } });
+      return;
+    }
     if (polling && req.method === "GET") return sendJson(res, 200, jobs.get(url.pathname.slice("/api/jobs/".length), owner));
     if (url.pathname === "/api/chat" && req.method === "POST") {
       limits.check(`${owner}:chat`, { limit: 6 });
-      const body = await readBody(req, demo ? 4096 : 48 * 1024);
+      const body = await readBody(req, 24 * 1024);
       body.message = textInput(body.message, "Message", demo ? 700 : 1500);
       if (body.anchorName !== undefined) body.anchorName = textInput(body.anchorName, "Selected card");
       body.format = formatInput(body.format);
       body.maxPrice = body.maxPrice ?? 2;
       if (typeof body.maxPrice !== "number" || !Number.isFinite(body.maxPrice) || body.maxPrice < 0.25 || body.maxPrice > 50) throw new HttpError(400, "Budget must be between $0.25 and $50.");
-      const prepared = {};
+      body.constraints = constraintsInput({ ...body.constraints, maxPrice: body.maxPrice });
+      for (const name of [...body.constraints.locked, ...body.constraints.excluded, ...Object.keys(body.constraints.owned)]) await exactCard(store, name);
+      const prepared = { workspace: await readWorkspace(body.context, store) };
       if (body.anchorName) {
         if (!["build_deck", "recommend_card"].includes(body.intent)) throw new HttpError(400, "Select a supported request type.");
         const selected = await store.resolveCard(body.anchorName);
@@ -245,7 +293,7 @@ function createApp({ store, ollama, demo = null, production = process.env.NODE_E
         jobs.assertAvailable(owner);
         await demo.admit(demoSession.inviteId);
       }
-      const jobId = jobs.submit(owner, stage => generateChat(body, stage, prepared));
+      const jobId = jobs.submit(owner, (stage, signal) => generateChat(body, stage, prepared, signal));
       return sendJson(res, 202, { jobId, status: "queued" });
     }
     if (url.pathname === "/api/autocomplete" && req.method === "GET") {
@@ -265,7 +313,7 @@ function createApp({ store, ollama, demo = null, production = process.env.NODE_E
 
     // Maintenance cannot run through the public deployment, even with forged headers.
     if (["/api/sync", "/api/ollama/pull", "/api/ollama/status"].includes(url.pathname)) {
-      if (production || !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress)) throw new HttpError(404, "Not found.");
+      if (production || store.snapshotOnly || !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress)) throw new HttpError(404, "Not found.");
       if (url.pathname === "/api/sync" && req.method === "POST") return sendJson(res, 200, await store.refreshBulkData());
       if (url.pathname === "/api/ollama/status" && req.method === "GET") return sendJson(res, 200, await ollama.status());
       if (url.pathname === "/api/ollama/pull" && req.method === "POST") {

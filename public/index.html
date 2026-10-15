@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Build budget Commander decks and discover Magic: The Gathering card synergies with JankBot.">
     <title>JankBot</title>
-    <link rel="stylesheet" href="/styles.css?v=workshop-7">
+    <link rel="stylesheet" href="/styles.css?v=workshop-10">
   </head>
   <body>
     <header class="masthead">
@@ -13,6 +13,11 @@
       <div class="brand"><span class="brand-mark" aria-hidden="true"><span class="icon icon-layers"></span></span><div><h1>JankBot</h1><p>Magic: The Gathering deck workshop</p></div></div>
       <div class="masthead-controls"><span class="edition-label">THE COMMAND ZONE</span><button id="demoSignOut" class="icon-button sign-out-button" type="button" aria-label="Sign out" title="Sign out of JankBot" hidden><span class="icon icon-log-out" aria-hidden="true"></span><span>Sign out</span></button></div>
     </header>
+    <nav class="workspace-tabs" aria-label="Workspace views" role="tablist">
+      <button type="button" role="tab" aria-selected="true" data-view="chat">Chat</button>
+      <button type="button" role="tab" aria-selected="false" data-view="deck">Deck</button>
+      <button type="button" role="tab" aria-selected="false" data-view="card">Card</button>
+    </nav>
     <main class="shell">
       <aside class="rail" aria-label="Saved builds">
         <details class="library-drawer" id="libraryDrawer" open>
@@ -74,11 +79,19 @@
               </select>
             </label>
             <label>
-              <span>Card budget</span>
-              <input id="maxPrice" type="number" min="0.25" max="50" step="0.01" value="2" form="chatForm" required>
+              <span>Per-card limit ($)</span>
+              <input id="maxPrice" type="number" min="0.25" max="50" step="0.01" value="10" form="chatForm" required>
             </label>
           </div>
         </div>
+        <details class="constraint-bar">
+          <summary>Deck constraints <span id="constraintSummary">37 lands &middot; no total limit</span></summary>
+          <div class="constraint-fields">
+            <label>Total purchase budget ($)<input id="totalBudget" type="number" min="1" max="10000" step="0.01" form="chatForm"></label>
+            <label>Lands<input id="landCount" type="number" min="20" max="48" value="37" form="chatForm" required></label>
+            <label>Second commander<input id="partnerName" type="text" maxlength="160" autocomplete="off"></label>
+          </div>
+        </details>
 
         <div class="messages" id="messages" role="log" aria-label="Conversation" aria-live="polite">
           <section class="opening" id="opening">
@@ -100,16 +113,27 @@
           <button type="submit" aria-label="Send" title="Send request">
             <span class="icon icon-send" aria-hidden="true"></span>
           </button>
+          <button type="button" id="cancelRequest" class="icon-button" aria-label="Cancel request" title="Cancel request" hidden><span class="icon icon-x" aria-hidden="true"></span></button>
         </form>
       </section>
 
       <aside class="inspector" aria-label="Deck inspector">
+        <div class="selected-card-panel">
         <div class="hero-card" id="heroCard">
           <div class="empty-card-slot"><span class="icon icon-layers" aria-hidden="true"></span></div>
           <div>
             <p class="eyebrow">On the table</p>
             <h2>No active build</h2>
           </div>
+        </div>
+        <div id="cardEvidence" class="card-evidence"></div>
+        <div class="card-options">
+          <label><input id="lockSelected" type="checkbox" disabled>Lock in deck</label>
+          <label><input id="excludeSelected" type="checkbox" disabled>Exclude from proposals</label>
+          <label>Owned quantity<input id="ownedQuantity" type="number" min="0" max="100" value="0" disabled></label>
+          <button type="button" id="explainSelected" disabled>Explain choice</button>
+          <button type="button" id="replaceSelected" disabled>Find replacement</button>
+        </div>
         </div>
 
         <section class="metrics">
@@ -130,11 +154,16 @@
             <p>Validation</p>
           </div>
         </section>
+        <div id="priceCoverage" class="price-coverage"></div>
+        <details class="deck-analysis"><summary>Deck analysis</summary><div id="deckHealth"></div></details>
 
         <section class="chart-section">
           <div class="section-title">
             <h2>Mana Curve</h2>
             <div class="toolbar-actions">
+              <button id="undoButton" class="icon-button" type="button" aria-label="Undo deck change" title="Undo deck change" disabled><span class="icon icon-undo-2" aria-hidden="true"></span></button>
+              <button id="redoButton" class="icon-button" type="button" aria-label="Redo deck change" title="Redo deck change" disabled><span class="icon icon-redo-2" aria-hidden="true"></span></button>
+              <button id="importButton" class="icon-button" type="button" aria-label="Import deck" title="Import deck"><span class="icon icon-upload" aria-hidden="true"></span></button>
               <button id="editDeckButton" class="icon-button" type="button" aria-label="Edit deck" title="Edit deck" disabled><span class="icon icon-pencil-line" aria-hidden="true"></span></button>
               <button id="exportButton" class="icon-button" type="button" aria-label="Export deck" title="Export deck" disabled><span class="icon icon-download" aria-hidden="true"></span></button>
             </div>
@@ -144,10 +173,29 @@
 
         <section class="deck-section">
           <h2>Decklist</h2>
+          <div class="deck-controls">
+            <input id="deckFilter" type="search" aria-label="Filter deck cards" placeholder="Find a name, role or type">
+            <label>Sort<select id="deckSort"><option value="score">Synergy</option><option value="name">Name</option><option value="price">Price</option><option value="mana">Mana value</option></select></label>
+            <label>Group<select id="deckGroup"><option value="type">Card type</option><option value="role">Role</option><option value="none">None</option></select></label>
+          </div>
           <div class="decklist" id="decklist"></div>
         </section>
       </aside>
     </main>
+    <p class="sr-only" id="requestStatus" role="status" aria-live="polite" aria-atomic="true"></p>
+    <dialog class="editor-dialog proposal-dialog" id="proposalDialog" aria-labelledby="proposalTitle">
+      <div class="proposal-shell"><header><h2 id="proposalTitle">Review deck changes</h2><button type="button" id="closeProposal" class="icon-button" aria-label="Close proposal" title="Close proposal"><span class="icon icon-x" aria-hidden="true"></span></button></header>
+        <div id="proposalBody"></div><p id="proposalError" role="alert" class="invalid-text"></p>
+        <footer><button type="button" id="discardProposal">Discard</button><button type="button" id="applyProposal">Apply validated changes</button></footer>
+      </div>
+    </dialog>
+    <dialog class="editor-dialog import-dialog" id="importDialog" aria-labelledby="importTitle">
+      <form id="importForm" class="proposal-shell"><header><h2 id="importTitle">Import deck</h2><button type="button" id="closeImport" class="icon-button" aria-label="Close import" title="Close import"><span class="icon icon-x" aria-hidden="true"></span></button></header>
+        <div class="import-fields"><label>Commander<input id="importCommander" type="text" maxlength="160"></label><label>Second commander<input id="importPartner" type="text" maxlength="160"></label><label>Text file<input id="importFile" type="file" accept=".txt,text/plain"></label></div>
+        <label class="import-text">Deck list<textarea id="importText" maxlength="16000" spellcheck="false" required></textarea></label>
+        <p id="importError" class="invalid-text" role="alert"></p><footer><button type="submit">Validate and import</button></footer>
+      </form>
+    </dialog>
 
     <dialog class="editor-dialog" id="deckEditor">
       <form method="dialog" class="editor-shell">
@@ -215,8 +263,9 @@
         <button id="confirmSignOut" type="button"><span class="icon icon-log-out" aria-hidden="true"></span>Sign out</button>
       </div>
     </dialog>
-    <script src="/access.js?v=workshop-7"></script>
-    <script src="/storage.js?v=workshop-7"></script>
-    <script src="/app.js?v=workshop-7"></script>
+    <script src="/access.js?v=workshop-10"></script>
+    <script src="/storage.js?v=workshop-10"></script>
+    <script src="/deck-io.js?v=workshop-10"></script>
+    <script src="/app.js?v=workshop-10"></script>
   </body>
 </html>

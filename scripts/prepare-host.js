@@ -18,6 +18,8 @@ async function prepare() {
   });
   console.log("Preparing current Scryfall data...");
   await store.ensureReady();
+  await require("./enrich-data").enrich(store.dataDir);
+  await require("./enrich-combos").enrichCombos(store.dataDir);
   console.log("Testing local model inference...");
   const result = await ollama.generate({ prompt: 'Return only {"ready":true}', format: "json", temperature: 0, maxTokens: 20 });
   if (JSON.parse(result.response).ready !== true) throw new Error("Model inference check failed.");

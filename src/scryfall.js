@@ -1,5 +1,6 @@
 const fs = require("node:fs/promises");
-const { createReadStream } = require("node:fs");
+const { createReadStream, createWriteStream } = require("node:fs");
+const { once } = require("node:events");
 const path = require("node:path");
 const { Readable } = require("node:stream");
 const { createGunzip } = require("node:zlib");
@@ -136,7 +137,7 @@ class CardStore {
     this.snapshotOnly = snapshotOnly;
     this.dataDir = dataDir;
     this.scryfall = scryfall;
-    this.cardsPath = path.join(dataDir, snapshotOnly ? "oracle-cards.compact.jsonl" : "oracle-cards.compact.json");
+    this.cardsPath = path.join(dataDir, "oracle-cards.compact.jsonl");
     this.metaPath = path.join(dataDir, "metadata.json");
     this.cards = [];
     this.byName = new Map();
@@ -146,6 +147,7 @@ class CardStore {
     this.refreshing = null;
     this.checkedAt = 0;
     this.candidateCache = new Map();
+    this.comboCache = new Map();
   }
 
   async ensureDataDir() {
@@ -190,6 +192,7 @@ class CardStore {
   }
 
   index(cards) {
+    cards = cards.filter(card => !/^Card(?: \/\/ Card)?$/i.test(card.type_line || ""));
     this.cards = cards;
     this.byName.clear();
     this.byNormalizedName.clear();
@@ -200,15 +203,33 @@ class CardStore {
     this.loaded = true;
     this.nameIndex = new CardNames(cards);
     this.candidateCache.clear();
+    this.comboCache.clear();
+  }
+
+  async combosFor(items, commanders = []) {
+    const metadata = await this.metadata();
+    if (!metadata.comboCount) return { status: "not_prepared", matches: [], matchedCount: 0 };
+    const counts = new Map(), leaders = new Set(commanders.map(card => card.oracle_id));
+    for (const { card } of items) counts.set(card.oracle_id, (counts.get(card.oracle_id) || 0) + 1);
+    const key = [...counts].sort().map(([id, count]) => `${id}:${count}`).join(",") + ":" + [...leaders].sort().join(",");
+    if (this.comboCache.has(key)) return this.comboCache.get(key);
+    const matches = []; let matchedCount = 0;
+    for await (const combo of jsonLines(createReadStream(path.join(this.dataDir, "combos.jsonl")))) {
+      if (combo.uses.every(use => (counts.get(use.oracleId) || 0) >= use.quantity && (!use.mustBeCommander || leaders.has(use.oracleId)))) {
+        matchedCount++; if (matches.length < 12) matches.push(combo);
+      }
+    }
+    const result = { status: "card_presence_only", matches, matchedCount, updatedAt: metadata.combosUpdatedAt,
+      scope: metadata.comboScope, shown: matches.length };
+    if (this.comboCache.size >= 8) this.comboCache.delete(this.comboCache.keys().next().value);
+    this.comboCache.set(key, result); return result;
   }
 
   async load() {
     let cards;
-    if (this.snapshotOnly) {
-      cards = [];
-      for await (const card of jsonLines(createReadStream(this.cardsPath))) cards.push(card);
-      if (!cards.length) throw new Error("The demo snapshot is empty.");
-    } else cards = JSON.parse(await fs.readFile(this.cardsPath, "utf8"));
+    cards = [];
+    for await (const card of jsonLines(createReadStream(this.cardsPath))) cards.push(card);
+    if (!cards.length) throw new Error("The card snapshot is empty.");
     this.index(cards);
   }
 
@@ -259,8 +280,13 @@ class CardStore {
     }
 
     if (!cards.length) throw new Error("Scryfall supplied an empty card index.");
-    await fs.writeFile(`${this.cardsPath}.tmp`, JSON.stringify(cards));
+    const output = createWriteStream(`${this.cardsPath}.tmp`);
+    const finished = once(output, "finish");
+    for (const card of cards) if (!output.write(`${JSON.stringify(card)}\n`)) await once(output, "drain");
+    output.end(); await finished;
     await fs.rename(`${this.cardsPath}.tmp`, this.cardsPath);
+    await fs.writeFile(path.join(this.dataDir, "oracle-cards.compact.json.tmp"), JSON.stringify(cards));
+    await fs.rename(path.join(this.dataDir, "oracle-cards.compact.json.tmp"), path.join(this.dataDir, "oracle-cards.compact.json"));
     const meta = {
       loaded: true,
       updatedAt: new Date().toISOString(),

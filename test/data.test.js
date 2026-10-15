@@ -44,14 +44,20 @@ function explanationFixture() {
   return { anchor, result, response, intent: "build_deck", message: `Give me a deck based around ${anchor.name}.` };
 }
 
+function selectedResponse(options) {
+  return { answer: options.format.properties.answer.enum[0], synergySummary: options.format.properties.synergySummary.items.enum.slice(0, 2),
+    budgetSummary: options.format.properties.budgetSummary.enum[0], mentionedCards: options.format.properties.mentionedCards.items.enum.slice(0, 1) };
+}
+
 test("Ollama explanation generation enforces the same bounded schema as validation", async () => {
   const fixture = explanationFixture();
   const client = new OllamaClient({ model: "test" });
   let generated;
-  client.generate = async options => { generated = options; return { response: JSON.stringify(fixture.response) }; };
+  client.generate = async options => { generated = options; return { response: JSON.stringify(selectedResponse(options)) }; };
   const result = await client.explain(fixture);
   assert.equal(result.usedOllama, true);
-  assert.deepEqual(result.synergySummary, fixture.response.synergySummary);
+  assert.deepEqual(result.synergySummary, generated.format.properties.synergySummary.items.enum.slice(0, 2));
+  assert.equal(result.grounding, "evidence_selected");
   assert.equal(generated.temperature, 0);
   assert.equal(generated.maxTokens, 420);
   assert.equal(generated.format.additionalProperties, false);
@@ -74,7 +80,7 @@ test("invalid model explanation lengths and shapes fail instead of truncating or
     { mentionedCards: ["Invented Ninja"] },
     { unexpected: "extra field" }
   ]) {
-    client.generate = async () => ({ response: JSON.stringify({ ...fixture.response, ...patch }) });
+    client.generate = async options => ({ response: JSON.stringify({ ...selectedResponse(options), ...patch }) });
     await assert.rejects(client.explain(fixture), { name: "OllamaError" });
   }
 });
@@ -84,6 +90,17 @@ test("a model may mention only cards included in its supplied prompt data", asyn
   const hidden = { card: { name: "Not supplied in the compact prompt" } };
   fixture.result.cards.push(hidden);
   const client = new OllamaClient({ model: "test" });
-  client.generate = async () => ({ response: JSON.stringify({ ...fixture.response, mentionedCards: [hidden.card.name] }) });
+  client.generate = async options => ({ response: JSON.stringify({ ...selectedResponse(options), mentionedCards: [hidden.card.name] }) });
   await assert.rejects(client.explain(fixture), /outside the validated result set/);
+});
+
+test("fluent but unsupported ability claims fail rather than reaching the user", async () => {
+  const fixture = explanationFixture(), client = new OllamaClient({ model: "test" });
+  client.generate = async options => ({ response: JSON.stringify({ ...selectedResponse(options), answer: "Yuriko has vigilance and lifelink." }) });
+  await assert.rejects(client.explain(fixture), /unsupported explanation claim/);
+  client.generate = async options => {
+    const response = selectedResponse(options); response.synergySummary[1] = response.synergySummary[0];
+    return { response: JSON.stringify(response) };
+  };
+  await assert.rejects(client.explain(fixture), /unsupported or repeated evidence/);
 });
